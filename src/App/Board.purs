@@ -1,35 +1,35 @@
 module App.Board where
 
 import Prelude
-import Camera (Camera, Vec2, toViewBox)
+import Camera (Camera, Vec2, screenPan, toViewBox)
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..))
 import Data.MediaType (MediaType(..))
+import Data.MouseButton (MouseButton(..), isPressed)
 import Data.Symbol (SProxy(..))
 import Data.Vec (vec2)
 import Effect.Class (class MonadEffect)
 import GameMap (BackgroundMap(..))
-import Halogen (AttrName(..))
+import Halogen (AttrName(..), gets, modify_)
 import Halogen as H
 import Halogen.HTML as HH
+import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Svg.Attributes as SA
 import Halogen.Svg.Elements as SE
-
-data MouseState
-  = MouseUp
-  | MouseDown
-    { lastMousePosition :: Vec2 Number
-    }
+import Web.UIEvent.MouseEvent as MouseEvent
 
 type State
   = { backgroundMap :: BackgroundMap
-    , mouseState :: MouseState
+    , lastMousePosition :: Vec2 Number
     , camera :: Camera
     }
 
 data Action
   = Initialize
+  | HandleMouseDown
+  | HandleMouseUp
+  | HandleMouseMove MouseEvent.MouseEvent
 
 type Input
   = State
@@ -62,7 +62,16 @@ render state =
     , HP.id_ "board"
     , toViewBox (vec2 1000.0 1000.0) state.camera
     ]
-    [ backgroundMap state.backgroundMap ]
+    [ backgroundMap state.backgroundMap
+    , SE.rect
+        [ HE.onMouseMove $ HandleMouseMove >>> Just
+        , HE.onMouseDown $ const $ Just HandleMouseDown
+        , HE.onMouseUp $ const $ Just HandleMouseUp
+        , SA.height 1000.0 --SA.height 1000.0 --SA.width 1000.0 
+        , SA.width 1000.0
+        , HP.attr (AttrName "fill") "transparent"
+        ]
+    ]
 
 backgroundMap :: forall m cs. BackgroundMap -> H.ComponentHTML Action cs m
 backgroundMap (BackgroundMap { width, height, url }) =
@@ -82,3 +91,20 @@ backgroundMap (BackgroundMap { width, height, url }) =
 handleAction :: forall cs o m. MonadEffect m => Action → H.HalogenM State Action cs o m Unit
 handleAction = case _ of
   Initialize -> pure unit
+  HandleMouseDown -> pure unit
+  HandleMouseUp -> pure unit
+  HandleMouseMove event -> do
+    previousMousePosition <- gets _.lastMousePosition
+    let
+      mouseButtonState = MouseEvent.buttons event
+
+      mousePosition = toNumber <$> vec2 (MouseEvent.clientX event) (MouseEvent.clientY event)
+
+      updateCamera camera
+        | isPressed LeftMouseButton mouseButtonState = screenPan (mousePosition - previousMousePosition) camera
+        | otherwise = camera
+    modify_ \state ->
+      state
+        { lastMousePosition = mousePosition
+        , camera = updateCamera state.camera
+        }

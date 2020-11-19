@@ -1,7 +1,6 @@
 module Main where
 
 import Prelude
-import App.Board (MouseState(..))
 import App.Board as Board
 import Camera as Camera
 import Effect (Effect)
@@ -24,5 +23,5 @@ main =
         , width: 1000
         }
     , camera: Camera.defaultCamera
-    , mouseState: MouseUp
+    , lastMousePosition: zero
     }
