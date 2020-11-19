@@ -11,7 +11,6 @@ import Data.Typelevel.Num (D2, d0, d1)
 import Data.Vec (Vec, (!!))
 import Halogen.HTML (IProp)
 import Halogen.Svg.Attributes as SA
-import Math (floor)
 
 type Vec2
   = Vec D2
@@ -58,10 +57,10 @@ zoomOn point amount = screenPan (-point) >>> zoomOrigin amount >>> screenPan poi
 -- Generate a svg viewbox from a Camera
 toViewBox :: forall r i. Vec2 Number -> Camera -> IProp ( viewBox ∷ String | r ) i
 toViewBox scale (Camera { position, zoom }) =
-  SA.viewBox (floor $ position !! d0)
-    (floor $ position !! d1)
-    (floor $ scale !! d0 / zoom)
-    (floor $ scale !! d1 / zoom)
+  SA.viewBox (position !! d0)
+    (position !! d1)
+    (scale !! d0 / zoom)
+    (scale !! d1 / zoom)
 
 -- Lenses
 _CameraPosition :: Lens' Camera (Vec2 Number)

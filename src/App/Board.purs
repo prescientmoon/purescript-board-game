@@ -1,7 +1,7 @@
 module App.Board where
 
 import Prelude
-import Camera (Camera, Vec2, screenPan, toViewBox)
+import Camera (Camera, Vec2, screenPan, toViewBox, zoomOn)
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..))
 import Data.MediaType (MediaType(..))
@@ -9,6 +9,7 @@ import Data.MouseButton (MouseButton(..), isPressed)
 import Data.Symbol (SProxy(..))
 import Data.Vec (vec2)
 import Effect.Class (class MonadEffect)
+import Effect.Class.Console (log)
 import GameMap (BackgroundMap(..))
 import Halogen (AttrName(..), gets, modify_)
 import Halogen as H
@@ -17,7 +18,10 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Svg.Attributes as SA
 import Halogen.Svg.Elements as SE
+import Unsafe.Coerce (unsafeCoerce)
 import Web.UIEvent.MouseEvent as MouseEvent
+import Web.UIEvent.WheelEvent (WheelEvent)
+import Web.UIEvent.WheelEvent as WheelEent
 
 type State
   = { backgroundMap :: BackgroundMap
@@ -30,6 +34,7 @@ data Action
   | HandleMouseDown
   | HandleMouseUp
   | HandleMouseMove MouseEvent.MouseEvent
+  | HandleScroll WheelEvent
 
 type Input
   = State
@@ -67,6 +72,7 @@ render state =
         [ HE.onMouseMove $ HandleMouseMove >>> Just
         , HE.onMouseDown $ const $ Just HandleMouseDown
         , HE.onMouseUp $ const $ Just HandleMouseUp
+        , HE.onWheel $ HandleScroll >>> Just
         , SA.height 1000.0 --SA.height 1000.0 --SA.width 1000.0 
         , SA.width 1000.0
         , HP.attr (AttrName "fill") "transparent"
@@ -93,6 +99,19 @@ handleAction = case _ of
   Initialize -> pure unit
   HandleMouseDown -> pure unit
   HandleMouseUp -> pure unit
+  HandleScroll event -> do
+    mousePosition <- gets _.lastMousePosition
+    let
+      delta = WheelEent.deltaY event
+    when (delta /= 0.0) do
+      modify_ \state ->
+        state
+          { camera =
+            zoomOn mousePosition
+              ( if delta < 0.0 then 1.1 else 1.0 / 1.1
+              )
+              state.camera
+          }
   HandleMouseMove event -> do
     previousMousePosition <- gets _.lastMousePosition
     let
