@@ -7,6 +7,7 @@ import Data.Lens.Iso.Newtype (_Newtype)
 import Data.Lens.Record (prop)
 import Data.Newtype (class Newtype)
 import Data.Symbol (SProxy(..))
+import Data.Tuple (Tuple, uncurry)
 import Data.Typelevel.Num (D2, d0, d1)
 import Data.Vec (Vec, (!!))
 import Halogen.HTML (IProp)
@@ -19,15 +20,17 @@ newtype Camera
   = Camera
   { position :: Vec2 Number
   , zoom :: Number
+  , zoomBounds :: Tuple Number Number
   }
 
 derive instance newtypeCamera :: Newtype Camera _
 
-defaultCamera :: Camera
-defaultCamera =
+defaultCamera :: Tuple Number Number -> Camera
+defaultCamera zoomBounds =
   Camera
     { position: zero
     , zoom: 1.0
+    , zoomBounds
     }
 
 toWorldCoordinates :: Camera -> Vec2 Number -> Vec2 Number
@@ -38,7 +41,11 @@ origin = view _CameraPosition
 
 -- Zoom on the origin of the __screen__ view 
 zoomOrigin :: Number -> Camera -> Camera
-zoomOrigin = over _CameraZoom <<< (*)
+zoomOrigin amount (Camera camera@{ zoomBounds, zoom }) =
+  Camera
+    camera
+      { zoom = uncurry clamp zoomBounds $ amount * zoom
+      }
 
 -- Translate the camera using a vector in world coordinates
 pan :: Vec2 Number -> Camera -> Camera
@@ -68,3 +75,6 @@ _CameraPosition = _Newtype <<< prop (SProxy :: _ "position")
 
 _CameraZoom :: Lens' Camera Number
 _CameraZoom = _Newtype <<< prop (SProxy :: _ "zoom")
+
+_CameraZoomBounds :: Lens' Camera (Tuple Number Number)
+_CameraZoomBounds = _Newtype <<< prop (SProxy :: _ "zoomBounds")

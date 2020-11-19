@@ -7,9 +7,9 @@ import Data.Maybe (Maybe(..))
 import Data.MediaType (MediaType(..))
 import Data.MouseButton (MouseButton(..), isPressed)
 import Data.Symbol (SProxy(..))
-import Data.Vec (vec2)
-import Effect.Class (class MonadEffect)
-import Effect.Class.Console (log)
+import Data.Typelevel.Num (d0, d1)
+import Data.Vec (vec2, (!!))
+import Effect.Class (class MonadEffect, liftEffect)
 import GameMap (BackgroundMap(..))
 import Halogen (AttrName(..), gets, modify_)
 import Halogen as H
@@ -19,6 +19,8 @@ import Halogen.HTML.Properties as HP
 import Halogen.Svg.Attributes as SA
 import Halogen.Svg.Elements as SE
 import Unsafe.Coerce (unsafeCoerce)
+import Web.HTML as Web
+import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as MouseEvent
 import Web.UIEvent.WheelEvent (WheelEvent)
 import Web.UIEvent.WheelEvent as WheelEent
@@ -27,6 +29,7 @@ type State
   = { backgroundMap :: BackgroundMap
     , lastMousePosition :: Vec2 Number
     , camera :: Camera
+    , windowSize :: Vec2 Number
     }
 
 data Action
@@ -35,6 +38,7 @@ data Action
   | HandleMouseUp
   | HandleMouseMove MouseEvent.MouseEvent
   | HandleScroll WheelEvent
+  | HandleResize
 
 type Input
   = State
@@ -62,10 +66,11 @@ component =
 render :: forall m cs. MonadEffect m => State -> H.ComponentHTML Action cs m
 render state =
   SE.svg
-    [ SA.height 1000.0
-    , SA.width 1000.0
+    [ SA.height $ state.windowSize !! d0
+    , SA.width $ state.windowSize !! d1
     , HP.id_ "board"
-    , toViewBox (vec2 1000.0 1000.0) state.camera
+    , toViewBox state.windowSize state.camera
+    , unsafeCoerce $ HE.onResize $ const $ Just HandleResize
     ]
     [ backgroundMap state.backgroundMap
     , SE.rect
@@ -96,7 +101,8 @@ backgroundMap (BackgroundMap { width, height, url }) =
 
 handleAction :: forall cs o m. MonadEffect m => Action → H.HalogenM State Action cs o m Unit
 handleAction = case _ of
-  Initialize -> pure unit
+  Initialize -> do
+    pure unit
   HandleMouseDown -> pure unit
   HandleMouseUp -> pure unit
   HandleScroll event -> do
@@ -127,3 +133,8 @@ handleAction = case _ of
         { lastMousePosition = mousePosition
         , camera = updateCamera state.camera
         }
+  HandleResize -> do
+    window <- liftEffect Web.window
+    width <- liftEffect $ Window.innerWidth window
+    height <- liftEffect $ Window.innerHeight window
+    modify_ _ { windowSize = toNumber <$> vec2 width height }
