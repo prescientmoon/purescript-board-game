@@ -1,7 +1,7 @@
 module App.Board where
 
 import Prelude
-import Camera (Camera, Vec2, screenPan, toViewBox, zoomOn)
+import Camera (Camera, Vec2, constrainPosition, screenPan, toViewBox, zoomOn)
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..))
 import Data.MediaType (MediaType(..))
@@ -11,7 +11,7 @@ import Data.Typelevel.Num (d0, d1)
 import Data.Vec (vec2, (!!))
 import Effect.Class (class MonadEffect, liftEffect)
 import GameMap (BackgroundMap(..))
-import Halogen (AttrName(..), gets, modify_)
+import Halogen (AttrName(..), get, gets, modify_)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -105,6 +105,23 @@ handleAction = case _ of
     pure unit
   HandleMouseDown -> pure unit
   HandleMouseUp -> pure unit
+  HandleMouseMove event -> do
+    { lastMousePosition, windowSize, backgroundMap: BackgroundMap background } <- get
+    let
+      mouseButtonState = MouseEvent.buttons event
+
+      mousePosition = toNumber <$> vec2 (MouseEvent.clientX event) (MouseEvent.clientY event)
+
+      updateCamera camera
+        | isPressed LeftMouseButton mouseButtonState =
+          constrainPosition zero (windowSize - vec2 (toNumber background.width) (toNumber background.height))
+            $ screenPan (mousePosition - lastMousePosition) camera
+        | otherwise = camera
+    modify_ \state ->
+      state
+        { lastMousePosition = mousePosition
+        , camera = updateCamera state.camera
+        }
   HandleScroll event -> do
     mousePosition <- gets _.lastMousePosition
     let
@@ -118,21 +135,6 @@ handleAction = case _ of
               )
               state.camera
           }
-  HandleMouseMove event -> do
-    previousMousePosition <- gets _.lastMousePosition
-    let
-      mouseButtonState = MouseEvent.buttons event
-
-      mousePosition = toNumber <$> vec2 (MouseEvent.clientX event) (MouseEvent.clientY event)
-
-      updateCamera camera
-        | isPressed LeftMouseButton mouseButtonState = screenPan (mousePosition - previousMousePosition) camera
-        | otherwise = camera
-    modify_ \state ->
-      state
-        { lastMousePosition = mousePosition
-        , camera = updateCamera state.camera
-        }
   HandleResize -> do
     window <- liftEffect Web.window
     width <- liftEffect $ Window.innerWidth window

@@ -26,5 +26,5 @@ main =
         }
     , camera: Camera.defaultCamera (Tuple 0.2 4.0)
     , lastMousePosition: zero
-    , windowSize: vec2 1000.0 1000.0
+    , windowSize: vec2 1500.0 1500.0
     }

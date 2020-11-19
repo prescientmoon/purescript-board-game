@@ -9,7 +9,7 @@ import Data.Newtype (class Newtype)
 import Data.Symbol (SProxy(..))
 import Data.Tuple (Tuple, uncurry)
 import Data.Typelevel.Num (D2, d0, d1)
-import Data.Vec (Vec, (!!))
+import Data.Vec (Vec, vec2, (!!))
 import Halogen.HTML (IProp)
 import Halogen.Svg.Attributes as SA
 
@@ -48,14 +48,18 @@ zoomOrigin amount (Camera camera@{ zoomBounds, zoom }) =
       }
 
 -- Translate the camera using a vector in world coordinates
-pan :: Vec2 Number -> Camera -> Camera
-pan = over _CameraPosition <<< flip (-)
-
 -- Translate the camera using a vector in screen coordinates
 screenPan :: Vec2 Number -> Camera -> Camera
-screenPan vector camera = pan worldCoordinates camera
+screenPan vector camera = over _CameraPosition (_ - worldCoordinates) camera
   where
   worldCoordinates = toWorldCoordinates camera vector - origin camera
+
+constrainPosition :: Vec2 Number -> Vec2 Number -> Camera -> Camera
+constrainPosition minimum maximum =
+  over _CameraPosition \position ->
+    vec2
+      (clamp (minimum !! d0) (maximum !! d0) (position !! d0))
+      (clamp (minimum !! d1) (maximum !! d1) (position !! d1))
 
 -- Zooms relative to a poin in screen coorinates
 zoomOn :: Vec2 Number -> Number -> Camera -> Camera
