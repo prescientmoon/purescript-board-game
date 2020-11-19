@@ -1,12 +1,13 @@
 { name = "board-game-thingy"
 , dependencies =
-  [ "prelude"
+  [ "console"
   , "debug"
   , "debugged"
-  , "generics-rep"
-  , "psci-support"
   , "effect"
-  , "console"
+  , "generics-rep"
+  , "halogen"
+  , "prelude"
+  , "psci-support"
   ]
 , packages = ./packages.dhall
 , sources = [ "src/**/*.purs" ]
