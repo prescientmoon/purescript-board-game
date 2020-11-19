@@ -6,6 +6,5 @@ body {
   height: 100vh;
   width: 100vw;
   overflow: hidden;
-
-  background: #1a1739;
+  background: blue;
 }

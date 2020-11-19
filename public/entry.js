@@ -1,5 +1,4 @@
-import("purescript/Main").then(({ main }) => {
-  console.timeEnd("Loaded purescript");
+import { main } from "purescript/Main";
 
-  main();
-});
+// Main has type Effect Unit.
+main();
