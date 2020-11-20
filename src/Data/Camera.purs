@@ -54,12 +54,18 @@ screenPan vector camera = over _CameraPosition (_ - worldCoordinates) camera
   where
   worldCoordinates = toWorldCoordinates camera vector - origin camera
 
+-- TODO: make this work
 constrainPosition :: Vec2 Number -> Vec2 Number -> Camera -> Camera
-constrainPosition minimum maximum =
-  over _CameraPosition \position ->
+constrainPosition screenMinimum screenMaximum camera@(Camera { zoom }) = over _CameraPosition updatePosition camera
+  where
+  updatePosition position =
     vec2
       (clamp (minimum !! d0) (maximum !! d0) (position !! d0))
       (clamp (minimum !! d1) (maximum !! d1) (position !! d1))
+
+  minimum = (_ / zoom) <$> screenMinimum
+
+  maximum = (_ / zoom) <$> screenMaximum
 
 -- Zooms relative to a poin in screen coorinates
 zoomOn :: Vec2 Number -> Number -> Camera -> Camera

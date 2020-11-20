@@ -1,16 +1,20 @@
 module App.Board where
 
 import Prelude
-import Camera (Camera, Vec2, constrainPosition, screenPan, toViewBox, zoomOn)
-import Data.Int (toNumber)
+import Camera (Camera, Vec2, defaultCamera, screenPan, toViewBox, zoomOn)
+import Data.Array as Array
+import Data.FunctorWithIndex (mapWithIndex)
+import Data.GameMap (BackgroundMap(..), GameMap(..), generateMap, maximumMapSize)
+import Data.Int (odd, toNumber)
 import Data.Maybe (Maybe(..))
 import Data.MediaType (MediaType(..))
 import Data.MouseButton (MouseButton(..), isPressed)
 import Data.Symbol (SProxy(..))
-import Data.Typelevel.Num (d0, d1)
-import Data.Vec (vec2, (!!))
+import Data.Tuple (Tuple(..))
+import Data.Typelevel.Num (D6, d0, d1, d5)
+import Data.Vec (Vec, vec2, (!!))
+import Data.Vec as Vec
 import Effect.Class (class MonadEffect, liftEffect)
-import GameMap (BackgroundMap(..))
 import Halogen (AttrName(..), get, gets, modify_)
 import Halogen as H
 import Halogen.HTML as HH
@@ -18,6 +22,8 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Svg.Attributes as SA
 import Halogen.Svg.Elements as SE
+import Halogen.Svg.Indexed as SI
+import Math (cos, pi, sin, sqrt)
 import Unsafe.Coerce (unsafeCoerce)
 import Web.HTML as Web
 import Web.HTML.Window as Window
@@ -30,6 +36,9 @@ type State
     , lastMousePosition :: Vec2 Number
     , camera :: Camera
     , windowSize :: Vec2 Number
+    , gameMap :: GameMap
+    , cellSize :: Number
+    , mapPadding :: Vec2 Number
     }
 
 data Action
@@ -41,18 +50,27 @@ data Action
   | HandleResize
 
 type Input
-  = State
+  = { backgroundMap :: BackgroundMap
+    , cellSize :: Number
+    , mapPadding :: Vec2 Number
+    }
 
 _rawHtml :: SProxy "rawHtml"
 _rawHtml = SProxy
 
-gameMap :: H.RefLabel
-gameMap = H.RefLabel "gameMap"
-
 component :: forall q o m. MonadEffect m => H.Component HH.HTML q Input o m
 component =
   H.mkComponent
-    { initialState: identity
+    { initialState:
+      \{ mapPadding, backgroundMap: backgroundMap@(BackgroundMap { width, height }), cellSize } ->
+        { backgroundMap
+        , camera: defaultCamera (Tuple 0.3 4.0)
+        , lastMousePosition: zero
+        , mapPadding
+        , cellSize
+        , windowSize: vec2 1500.0 1500.0
+        , gameMap: generateMap $ (maximumMapSize cellSize $ mapPadding + (toNumber <$> vec2 width height))
+        }
     , render
     , eval:
       H.mkEval
@@ -72,23 +90,45 @@ render state =
     , toViewBox state.windowSize state.camera
     , unsafeCoerce $ HE.onResize $ const $ Just HandleResize
     ]
-    [ backgroundMap state.backgroundMap
+    [ renderBackgroundMap state.mapPadding state.backgroundMap
     , SE.rect
         [ HE.onMouseMove $ HandleMouseMove >>> Just
         , HE.onMouseDown $ const $ Just HandleMouseDown
         , HE.onMouseUp $ const $ Just HandleMouseUp
         , HE.onWheel $ HandleScroll >>> Just
-        , SA.height 1000.0 --SA.height 1000.0 --SA.width 1000.0 
-        , SA.width 1000.0
+        , SA.height (state.windowSize !! d0)
+        , SA.width (state.windowSize !! d1)
         , HP.attr (AttrName "fill") "transparent"
         ]
+    , renderGameMap state.cellSize state.gameMap
     ]
 
-backgroundMap :: forall m cs. BackgroundMap -> H.ComponentHTML Action cs m
-backgroundMap (BackgroundMap { width, height, url }) =
+renderGameMap :: forall m cs. Number -> GameMap -> H.ComponentHTML Action cs m
+renderGameMap cellSize (GameMap gameMap) =
+  SE.g [] $ join
+    $ flip Array.mapWithIndex gameMap \x inner ->
+        flip Array.mapWithIndex inner \y _ -> renderCell x y
+  where
+  renderCell x y =
+    renderFlatHexagon cellSize (vec2 screenX screenY)
+      [ SA.stroke (Just $ SA.RGB 104 96 192)
+      , SA.fill Nothing
+      , SA.attr (AttrName "stroke-width") "2.0"
+      ]
+    where
+    verticalSize = cellSize * sqrt 3.0
+
+    screenX = cellSize * (1.5 * toNumber x + 1.0)
+
+    screenY = verticalSize * (toNumber y + if odd x then 1.0 else 0.5)
+
+renderBackgroundMap :: forall m cs. Vec2 Number -> BackgroundMap -> H.ComponentHTML Action cs m
+renderBackgroundMap mapPadding (BackgroundMap { width, height, url }) =
   SE.foreignObject
     [ SA.width $ toNumber width
     , SA.height $ toNumber width
+    , SA.x $ (mapPadding !! d0) / 2.0
+    , SA.y $ (mapPadding !! d1) / 2.0
     ]
     [ HH.object
         [ HP.type_ (MediaType "image/svg+xml")
@@ -98,6 +138,41 @@ backgroundMap (BackgroundMap { width, height, url }) =
         ]
         []
     ]
+
+hexagonCorner :: Number -> Int -> Vec2 Number -> Vec2 Number
+hexagonCorner size nth center =
+  center
+    + vec2
+        (size * cos angle)
+        (size * sin angle)
+  where
+  angle = toNumber nth * pi / 3.0
+
+renderFlatHexagon ::
+  forall cs m.
+  Number ->
+  Vec2 Number ->
+  Array
+    ( HP.IProp
+        SI.SVGpath
+        Action
+    ) ->
+  H.ComponentHTML Action cs m
+renderFlatHexagon size center props =
+  SE.path
+    $ Array.snoc props
+    $ SA.d
+    $ SA.Abs
+    <$> Array.snoc commands SA.Z
+  where
+  commands =
+    Vec.toArray
+      $ flip mapWithIndex vec \index point ->
+          (if index == 0 then SA.M else SA.L) (point !! d0)
+            (point !! d1)
+
+  vec :: Vec D6 (Vec2 Number)
+  vec = Vec.range d0 d5 <#> \nth -> hexagonCorner size nth center
 
 handleAction :: forall cs o m. MonadEffect m => Action → H.HalogenM State Action cs o m Unit
 handleAction = case _ of
@@ -113,9 +188,7 @@ handleAction = case _ of
       mousePosition = toNumber <$> vec2 (MouseEvent.clientX event) (MouseEvent.clientY event)
 
       updateCamera camera
-        | isPressed LeftMouseButton mouseButtonState =
-          constrainPosition zero (windowSize - vec2 (toNumber background.width) (toNumber background.height))
-            $ screenPan (mousePosition - lastMousePosition) camera
+        | isPressed LeftMouseButton mouseButtonState = screenPan (mousePosition - lastMousePosition) camera
         | otherwise = camera
     modify_ \state ->
       state

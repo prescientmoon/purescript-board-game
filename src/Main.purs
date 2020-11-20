@@ -2,11 +2,9 @@ module Main where
 
 import Prelude
 import App.Board as Board
-import Camera as Camera
-import Data.Tuple (Tuple(..))
+import Data.GameMap (BackgroundMap(..))
 import Data.Vec (vec2)
 import Effect (Effect)
-import GameMap (BackgroundMap(..))
 import Halogen.Aff as HA
 import Halogen.VDom.Driver (runUI)
 
@@ -21,10 +19,9 @@ main =
     { backgroundMap:
       BackgroundMap
         { url: "romania.svg"
-        , height: 1000
+        , height: 500
         , width: 1000
         }
-    , camera: Camera.defaultCamera (Tuple 0.2 4.0)
-    , lastMousePosition: zero
-    , windowSize: vec2 1500.0 1500.0
+    , cellSize: 50.0
+    , mapPadding: vec2 100.0 200.0
     }
