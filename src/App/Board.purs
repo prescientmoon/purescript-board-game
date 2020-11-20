@@ -4,32 +4,37 @@ import Prelude
 import Camera (Camera, Vec2, defaultCamera, screenPan, toViewBox, zoomOn)
 import Data.Array as Array
 import Data.FunctorWithIndex (mapWithIndex)
-import Data.GameMap (BackgroundMap(..), GameMap(..), generateMap, maximumMapSize)
+import Data.GameMap (BackgroundMap(..), GameMap(..), generateMap, maximumMapSize, neighbours)
 import Data.Int (odd, toNumber)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.MediaType (MediaType(..))
 import Data.MouseButton (MouseButton(..), isPressed)
+import Data.Set (Set)
+import Data.Set as Set
 import Data.Symbol (SProxy(..))
-import Data.Tuple (Tuple(..))
+import Data.Tuple (Tuple(..), uncurry)
 import Data.Typelevel.Num (D6, d0, d1, d5)
 import Data.Vec (Vec, vec2, (!!))
 import Data.Vec as Vec
-import Effect.Class (class MonadEffect, liftEffect)
+import Effect.Class (class MonadEffect)
 import Halogen (AttrName(..), get, gets, modify_)
 import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
+import Halogen.Svg.Attributes (Color(..))
 import Halogen.Svg.Attributes as SA
 import Halogen.Svg.Elements as SE
 import Halogen.Svg.Indexed as SI
 import Math (cos, pi, sin, sqrt)
-import Unsafe.Coerce (unsafeCoerce)
-import Web.HTML as Web
-import Web.HTML.Window as Window
 import Web.UIEvent.MouseEvent as MouseEvent
 import Web.UIEvent.WheelEvent (WheelEvent)
 import Web.UIEvent.WheelEvent as WheelEent
+
+type SelectionState
+  = { position :: Tuple Int Int
+    , neighbours :: Set (Tuple Int Int)
+    }
 
 type State
   = { backgroundMap :: BackgroundMap
@@ -39,6 +44,7 @@ type State
     , gameMap :: GameMap
     , cellSize :: Number
     , mapPadding :: Vec2 Number
+    , selectedCell :: Maybe SelectionState
     }
 
 data Action
@@ -47,7 +53,7 @@ data Action
   | HandleMouseUp
   | HandleMouseMove MouseEvent.MouseEvent
   | HandleScroll WheelEvent
-  | HandleResize
+  | SelectCell (Tuple Int Int)
 
 type Input
   = { backgroundMap :: BackgroundMap
@@ -70,6 +76,7 @@ component =
         , cellSize
         , windowSize: vec2 1500.0 1500.0
         , gameMap: generateMap $ (maximumMapSize cellSize $ mapPadding + (toNumber <$> vec2 width height))
+        , selectedCell: Nothing
         }
     , render
     , eval:
@@ -80,7 +87,6 @@ component =
             }
     }
 
--- <object type="image/svg+xml" data="image.svg"></object>
 render :: forall m cs. MonadEffect m => State -> H.ComponentHTML Action cs m
 render state =
   SE.svg
@@ -88,7 +94,7 @@ render state =
     , SA.width $ state.windowSize !! d1
     , HP.id_ "board"
     , toViewBox state.windowSize state.camera
-    , unsafeCoerce $ HE.onResize $ const $ Just HandleResize
+    , HE.onWheel $ HandleScroll >>> Just
     ]
     [ renderBackgroundMap state.mapPadding state.backgroundMap
     , SE.rect
@@ -100,11 +106,11 @@ render state =
         , SA.width (state.windowSize !! d1)
         , HP.attr (AttrName "fill") "transparent"
         ]
-    , renderGameMap state.cellSize state.gameMap
+    , renderGameMap state.cellSize state.selectedCell state.gameMap
     ]
 
-renderGameMap :: forall m cs. Number -> GameMap -> H.ComponentHTML Action cs m
-renderGameMap cellSize (GameMap gameMap) =
+renderGameMap :: forall m cs. Number -> Maybe SelectionState -> GameMap -> H.ComponentHTML Action cs m
+renderGameMap cellSize selectionState (GameMap gameMap) =
   SE.g [] $ join
     $ flip Array.mapWithIndex gameMap \x inner ->
         flip Array.mapWithIndex inner \y _ -> renderCell x y
@@ -112,10 +118,22 @@ renderGameMap cellSize (GameMap gameMap) =
   renderCell x y =
     renderFlatHexagon cellSize (vec2 screenX screenY)
       [ SA.stroke (Just $ SA.RGB 104 96 192)
-      , SA.fill Nothing
+      , SA.fill $ Just $ fromMaybe (RGBA 0 0 0 0.0) fill
       , SA.attr (AttrName "stroke-width") "2.0"
+      , HE.onClick $ const $ Just $ SelectCell (Tuple x y)
+      , HE.onMouseMove $ HandleMouseMove >>> Just
       ]
     where
+    fill = do
+      selection <- selectionState
+      if selection.position == Tuple x y then
+        Just (RGBA 210 238 0 0.6)
+      else
+        if Set.member (Tuple x y) selection.neighbours then
+          Just (RGBA 254 69 69 0.6)
+        else
+          Nothing
+
     verticalSize = cellSize * sqrt 3.0
 
     screenX = cellSize * (1.5 * toNumber x + 1.0)
@@ -208,8 +226,18 @@ handleAction = case _ of
               )
               state.camera
           }
-  HandleResize -> do
-    window <- liftEffect Web.window
-    width <- liftEffect $ Window.innerWidth window
-    height <- liftEffect $ Window.innerHeight window
-    modify_ _ { windowSize = toNumber <$> vec2 width height }
+  SelectCell position -> do
+    modify_ \state ->
+      state
+        { selectedCell =
+          if (state.selectedCell <#> _.position) == Just position then
+            Nothing
+          else
+            Just
+              { position
+              , neighbours:
+                Set.fromFoldable $ map (\v -> Tuple (v !! d0) (v !! d1))
+                  $ neighbours
+                  $ uncurry vec2 position
+              }
+        }
