@@ -19,6 +19,9 @@ object {
   fill-opacity: 0.6;
   stroke-width: 2;
   stroke: rgb(104, 96, 192);
+
+  transition: fill-opacity 0.3s;
+  cursor: pointer;
 }
 
 .board__hexagon--selected {
@@ -27,6 +30,14 @@ object {
 
 .board__hexagon--selection-neighbour {
   fill: rgb(256, 69, 67);
+}
+
+.board__hexagon:not(.board__hexagon--selected):hover {
+  fill: rgb(104, 96, 192);
+}
+
+.board__hexagon--selected:hover {
+  fill-opacity: 0.8;
 }
 
 .board__piece {

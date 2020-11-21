@@ -103,17 +103,9 @@ render state =
     , HP.id_ "board"
     , toViewBox state.windowSize state.camera
     , HE.onWheel $ HandleScroll >>> Just
+    , HE.onMouseMove $ HandleMouseMove >>> Just
     ]
     [ renderBackgroundMap state.mapPadding state.backgroundMap
-    , SE.rect
-        [ HE.onMouseMove $ HandleMouseMove >>> Just
-        , HE.onMouseDown $ const $ Just HandleMouseDown
-        , HE.onMouseUp $ const $ Just HandleMouseUp
-        , HE.onWheel $ HandleScroll >>> Just
-        , SA.height (state.windowSize !! d0)
-        , SA.width (state.windowSize !! d1)
-        , HP.attr (AttrName "fill") "transparent"
-        ]
     , renderGameMap state.cellSize state.selectedCell state.gameMap
     ]
 
