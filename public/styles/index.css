@@ -12,3 +12,25 @@ body {
 object {
   user-select: none;
 }
+
+.board__hexagon {
+  /* This is required for the event handlers to be registered */
+  fill: transparent;
+  fill-opacity: 0.6;
+  stroke-width: 2;
+  stroke: rgb(104, 96, 192);
+}
+
+.board__hexagon--selected {
+  fill: rgb(210, 238, 0);
+}
+
+.board__hexagon--selection-neighbour {
+  fill: rgb(256, 69, 67);
+}
+
+.board__piece {
+  fill: none;
+  stroke: #1e88e5;
+  stroke-width: 3;
+}

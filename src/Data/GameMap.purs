@@ -4,6 +4,7 @@ import Prelude
 import Camera (Vec2)
 import Data.Array as Array
 import Data.Int (even, floor)
+import Data.Newtype (class Newtype)
 import Data.Typelevel.Num (d0, d1)
 import Data.Vec (vec2, (!!))
 import Math (sqrt)
@@ -50,3 +51,6 @@ neighbours position = directions <#> (_ + position)
     , vec2 (-1) 0
     , vec2 0 1
     ]
+
+-- Typeclass instances
+derive instance newtypeGameMap :: Newtype GameMap _

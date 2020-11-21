@@ -4,13 +4,18 @@ import Prelude
 import Camera (Camera, Vec2, defaultCamera, screenPan, toViewBox, zoomOn)
 import Data.Array as Array
 import Data.FunctorWithIndex (mapWithIndex)
-import Data.GameMap (BackgroundMap(..), GameMap(..), generateMap, maximumMapSize, neighbours)
+import Data.GameMap (BackgroundMap(..), CellData(..), GameMap(..), generateMap, maximumMapSize, neighbours)
 import Data.Int (odd, toNumber)
+import Data.Lens (over)
+import Data.Lens.Index (ix)
+import Data.Lens.Iso.Newtype (_Newtype)
+import Data.Lens.Record (prop)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.MediaType (MediaType(..))
 import Data.MouseButton (MouseButton(..), isPressed)
 import Data.Set (Set)
 import Data.Set as Set
+import Data.String (joinWith)
 import Data.Symbol (SProxy(..))
 import Data.Tuple (Tuple(..), uncurry)
 import Data.Typelevel.Num (D6, d0, d1, d5)
@@ -22,7 +27,6 @@ import Halogen as H
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
-import Halogen.Svg.Attributes (Color(..))
 import Halogen.Svg.Attributes as SA
 import Halogen.Svg.Elements as SE
 import Halogen.Svg.Indexed as SI
@@ -53,6 +57,7 @@ data Action
   | HandleMouseUp
   | HandleMouseMove MouseEvent.MouseEvent
   | HandleScroll WheelEvent
+  | ChangeCellData (Tuple Int Int)
   | SelectCell (Tuple Int Int)
 
 type Input
@@ -63,6 +68,9 @@ type Input
 
 _rawHtml :: SProxy "rawHtml"
 _rawHtml = SProxy
+
+_gameMap :: SProxy "gameMap"
+_gameMap = SProxy
 
 component :: forall q o m. MonadEffect m => H.Component HH.HTML q Input o m
 component =
@@ -113,26 +121,50 @@ renderGameMap :: forall m cs. Number -> Maybe SelectionState -> GameMap -> H.Com
 renderGameMap cellSize selectionState (GameMap gameMap) =
   SE.g [] $ join
     $ flip Array.mapWithIndex gameMap \x inner ->
-        flip Array.mapWithIndex inner \y _ -> renderCell x y
+        join
+          $ flip Array.mapWithIndex inner \y cellData -> renderCell cellData x y
   where
-  renderCell x y =
-    renderFlatHexagon cellSize (vec2 screenX screenY)
-      [ SA.stroke (Just $ SA.RGB 104 96 192)
-      , SA.fill $ Just $ fromMaybe (RGBA 0 0 0 0.0) fill
-      , SA.attr (AttrName "stroke-width") "2.0"
-      , HE.onClick $ const $ Just $ SelectCell (Tuple x y)
-      , HE.onMouseMove $ HandleMouseMove >>> Just
-      ]
+  renderCell cellData x y = Array.cons hexagon content
     where
-    fill = do
-      selection <- selectionState
-      if selection.position == Tuple x y then
-        Just (RGBA 210 238 0 0.6)
-      else
-        if Set.member (Tuple x y) selection.neighbours then
-          Just (RGBA 254 69 69 0.6)
-        else
-          Nothing
+    hexagon =
+      renderFlatHexagon cellSize (vec2 screenX screenY)
+        [ SA.class_ classes
+        , HE.onClick
+            $ \event ->
+                Just
+                  if MouseEvent.ctrlKey event then
+                    ChangeCellData (Tuple x y)
+                  else
+                    SelectCell (Tuple x y)
+        , HE.onMouseMove $ HandleMouseMove >>> Just
+        ]
+
+    content = case cellData of
+      EmptyCell -> []
+      GamePiece ->
+        [ SE.rect
+            [ SA.x (screenX - pieceWidth / 2.0)
+            , SA.y (screenY - pieceHeight / 2.0)
+            , SA.height pieceHeight
+            , SA.width pieceWidth
+            , SA.class_ "board__piece"
+            ]
+        ]
+        where
+        pieceHeight = cellSize * 1.2
+
+        pieceWidth = cellSize
+
+    classes =
+      joinWith " " $ append [ "board__hexagon" ] $ fromMaybe [] $ selectionState
+        <#> \selection ->
+            if selection.position == Tuple x y then
+              [ "board__hexagon--selected" ]
+            else
+              if Set.member (Tuple x y) selection.neighbours then
+                [ "board__hexagon--selection-neighbour" ]
+              else
+                []
 
     verticalSize = cellSize * sqrt 3.0
 
@@ -144,7 +176,7 @@ renderBackgroundMap :: forall m cs. Vec2 Number -> BackgroundMap -> H.ComponentH
 renderBackgroundMap mapPadding (BackgroundMap { width, height, url }) =
   SE.foreignObject
     [ SA.width $ toNumber width
-    , SA.height $ toNumber width
+    , SA.height $ toNumber height
     , SA.x $ (mapPadding !! d0) / 2.0
     , SA.y $ (mapPadding !! d1) / 2.0
     ]
@@ -226,6 +258,11 @@ handleAction = case _ of
               )
               state.camera
           }
+  ChangeCellData (Tuple x y) -> do
+    modify_
+      $ over (prop _gameMap <<< _Newtype <<< ix x <<< ix y) case _ of
+          EmptyCell -> GamePiece
+          GamePiece -> EmptyCell
   SelectCell position -> do
     modify_ \state ->
       state
