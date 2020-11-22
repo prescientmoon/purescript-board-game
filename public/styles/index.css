@@ -17,6 +17,10 @@ object {
   background: #1a1730;
 }
 
+.board__background {
+  pointer-events: none;
+}
+
 .board__hexagon {
   /* This is required for the event handlers to be registered */
   fill: transparent;

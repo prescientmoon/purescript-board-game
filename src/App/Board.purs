@@ -2,7 +2,7 @@ module App.Board where
 
 import Prelude
 import Camera (Camera, Vec2, defaultCamera, screenPan, toViewBox, toWorldCoordinates, zoomOn)
-import Component.Utils (maybeElement)
+import Component.Utils (intervalEventSource, maybeElement)
 import Data.Array as Arra
 import Data.Array as Array
 import Data.FunctorWithIndex (mapWithIndex)
@@ -19,12 +19,13 @@ import Data.Set (Set)
 import Data.Set as Set
 import Data.String (joinWith)
 import Data.Symbol (SProxy(..))
+import Data.Time.Duration (Milliseconds)
 import Data.Tuple (Tuple(..), uncurry)
 import Data.Typelevel.Num (D6, d0, d1, d5)
 import Data.Vec (Vec, vec2, (!!))
 import Data.Vec as Vec
+import Effect.Aff.Class (class MonadAff)
 import Effect.Class (class MonadEffect)
-import Effect.Class.Console (log)
 import Halogen (AttrName(..), get, gets, modify_)
 import Halogen as H
 import Halogen.HTML as HH
@@ -46,6 +47,9 @@ type Input
     , windowSize :: Vec2 Number
     , backgroundUrl :: String
     , backgroundSize :: Vec2 Number
+    , borderScrollAreaSize :: Number
+    , borderScrollSpeed :: Number
+    , borderScrollInterval :: Milliseconds
     }
 
 type SelectionState
@@ -74,6 +78,7 @@ type State
 
 data Action
   = Initialize
+  | BorderScroll
   | HandleMouseDown
   | HandleMouseUp
   | HandleMouseMove MouseEvent.MouseEvent
@@ -84,7 +89,7 @@ data Action
   | DragPiece (Vec2 Number) PiecePosition Piece MouseEvent
   | DropPiece { x :: Int, y :: Int, index :: Maybe Int }
 
-component :: forall q o m. MonadEffect m => H.Component HH.HTML q Input o m
+component :: forall q o m. MonadAff m => H.Component HH.HTML q Input o m
 component =
   H.mkComponent
     { initialState
@@ -123,6 +128,7 @@ render state =
     , toViewBox state.settings.windowSize state.camera
     , HE.onWheel $ HandleScroll >>> Just
     , HE.onMouseMove $ HandleMouseMove >>> Just
+    , HE.onMouseUp $ const $ Just HandleMouseUp
     ]
     [ renderBackgroundMap state.settings
     , renderGameMap state.settings state.selection state.gameMap
@@ -235,6 +241,7 @@ renderBackgroundMap settings =
     , SA.height height
     , SA.x $ settings.mapPadding !! d0
     , SA.y $ settings.mapPadding !! d1
+    , SA.class_ "board__background"
     ]
     [ HH.object
         [ HP.type_ (MediaType "image/svg+xml")
@@ -284,11 +291,22 @@ renderFlatHexagon size center props =
   vec :: Vec D6 (Vec2 Number)
   vec = Vec.range d0 d5 <#> \nth -> hexagonCorner size nth center
 
-handleAction :: forall cs o m. MonadEffect m => Action → H.HalogenM State Action cs o m Unit
+handleAction :: forall cs o m. MonadAff m => Action → H.HalogenM State Action cs o m Unit
 handleAction = case _ of
-  Initialize -> pure unit
+  Initialize -> do
+    interval <- gets _.settings.borderScrollInterval
+    void $ H.subscribe $ BorderScroll <$ intervalEventSource interval
+  BorderScroll -> do
+    { lastMousePosition, settings, dragState } <- get
+    unless (isNothing dragState) do
+      let
+        panVector =
+          ((*) settings.borderScrollSpeed)
+            <$> Vec.zipWith (getPanDirection settings.borderScrollAreaSize)
+                lastMousePosition
+                settings.windowSize
+      modify_ $ over (prop _camera) $ screenPan panVector
   HandleMouseUp -> do
-    log "here 1"
     modify_ $ set (prop _dragState) Nothing
   HandleMouseDown -> pure unit
   HandleMouseMove event -> do
@@ -303,10 +321,7 @@ handleAction = case _ of
         | otherwise = camera
 
       update state
-        | isNothing dragState =
-          state
-            { camera = updateCamera state.camera
-            }
+        | isNothing dragState = over (prop _camera) updateCamera state
         | not (isPressed LeftMouseButton mouseButtonState) = set (prop _dragState) Nothing state
         | otherwise = state
     modify_ $ set (prop _lastMousePosition) mousePosition <<< update
@@ -356,7 +371,6 @@ handleAction = case _ of
           }
   DropPiece dropAt -> do
     dragState <- gets _.dragState
-    log "here 2"
     case dragState of
       Just { position, piece }
         | position.x /= dropAt.x || position.y /= dropAt.y ->
@@ -377,6 +391,12 @@ handleAction = case _ of
       _ -> do
         handleAction HandleMouseUp
 
+getPanDirection :: Number -> Number -> Number -> Number
+getPanDirection limit position maximum
+  | position < limit = 1.0
+  | position > maximum - limit = -1.0
+  | otherwise = 0.0
+
 -- SProxies
 _selectedCell :: SProxy "selectedCell"
 _selectedCell = SProxy
@@ -392,6 +412,9 @@ _dragState = SProxy
 
 _gameMap :: SProxy "gameMap"
 _gameMap = SProxy
+
+_camera :: SProxy "camera"
+_camera = SProxy
 
 _lastMousePosition :: SProxy "lastMousePosition"
 _lastMousePosition = SProxy
