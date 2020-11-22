@@ -7,18 +7,11 @@ import Data.Int (even, floor)
 import Data.Newtype (class Newtype)
 import Data.Typelevel.Num (d0, d1)
 import Data.Vec (vec2, (!!))
+import Halogen.Svg.Attributes (Color)
 import Math (sqrt)
 
-newtype BackgroundMap
-  = BackgroundMap
-  { width :: Int
-  , height :: Int
-  , url :: String
-  }
-
-data CellData
-  = EmptyCell
-  | GamePiece
+type CellData
+  = Array { color :: Color }
 
 newtype GameMap
   = GameMap (Array (Array CellData))
@@ -27,7 +20,7 @@ generateMap :: Vec2 Int -> GameMap
 generateMap size =
   GameMap
     $ Array.replicate (size !! d0)
-    $ Array.replicate (size !! d1) EmptyCell
+    $ Array.replicate (size !! d1) []
 
 maximumMapSize :: Number -> Vec2 Number -> Vec2 Int
 maximumMapSize cellSize windowSize = vec2 width height

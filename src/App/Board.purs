@@ -2,10 +2,11 @@ module App.Board where
 
 import Prelude
 import Camera (Camera, Vec2, defaultCamera, screenPan, toViewBox, zoomOn)
+import Data.Array as Arra
 import Data.Array as Array
 import Data.FunctorWithIndex (mapWithIndex)
-import Data.GameMap (BackgroundMap(..), CellData(..), GameMap(..), generateMap, maximumMapSize, neighbours)
-import Data.Int (odd, toNumber)
+import Data.GameMap (GameMap(..), generateMap, maximumMapSize, neighbours)
+import Data.Int (floor, odd, toNumber)
 import Data.Lens (over)
 import Data.Lens.Index (ix)
 import Data.Lens.Iso.Newtype (_Newtype)
@@ -35,20 +36,33 @@ import Web.UIEvent.MouseEvent as MouseEvent
 import Web.UIEvent.WheelEvent (WheelEvent)
 import Web.UIEvent.WheelEvent as WheelEent
 
+type RenderSettings
+  = { cellSize :: Number
+    , mapPadding :: Vec2 Number
+    , stackedPieceOffset :: Number
+    , windowSize :: Vec2 Number
+    , backgroundUrl :: String
+    , backgroundSize :: Vec2 Number
+    }
+
+type PiecePosition
+  = { x :: Int, y :: Int, index :: Int }
+
 type SelectionState
-  = { position :: Tuple Int Int
-    , neighbours :: Set (Tuple Int Int)
+  = { selectedCell ::
+      Maybe
+        { position :: Tuple Int Int
+        , neighbours :: Set (Tuple Int Int)
+        }
+    , selectedPiece :: Maybe PiecePosition
     }
 
 type State
-  = { backgroundMap :: BackgroundMap
-    , lastMousePosition :: Vec2 Number
+  = { lastMousePosition :: Vec2 Number
     , camera :: Camera
-    , windowSize :: Vec2 Number
     , gameMap :: GameMap
-    , cellSize :: Number
-    , mapPadding :: Vec2 Number
-    , selectedCell :: Maybe SelectionState
+    , settings :: RenderSettings
+    , selection :: SelectionState
     }
 
 data Action
@@ -57,34 +71,30 @@ data Action
   | HandleMouseUp
   | HandleMouseMove MouseEvent.MouseEvent
   | HandleScroll WheelEvent
-  | ChangeCellData (Tuple Int Int)
+  | AddPiece (Tuple Int Int)
   | SelectCell (Tuple Int Int)
-
-type Input
-  = { backgroundMap :: BackgroundMap
-    , cellSize :: Number
-    , mapPadding :: Vec2 Number
-    }
-
-_rawHtml :: SProxy "rawHtml"
-_rawHtml = SProxy
+  | SelectPiece PiecePosition
 
 _gameMap :: SProxy "gameMap"
 _gameMap = SProxy
 
-component :: forall q o m. MonadEffect m => H.Component HH.HTML q Input o m
+component :: forall q o m. MonadEffect m => H.Component HH.HTML q RenderSettings o m
 component =
   H.mkComponent
     { initialState:
-      \{ mapPadding, backgroundMap: backgroundMap@(BackgroundMap { width, height }), cellSize } ->
-        { backgroundMap
-        , camera: defaultCamera (Tuple 0.3 4.0)
+      \settings ->
+        { camera: defaultCamera (Tuple 0.3 4.0)
         , lastMousePosition: zero
-        , mapPadding
-        , cellSize
-        , windowSize: vec2 1500.0 1500.0
-        , gameMap: generateMap $ (maximumMapSize cellSize $ mapPadding + (toNumber <$> vec2 width height))
-        , selectedCell: Nothing
+        , gameMap:
+          generateMap
+            $ ( maximumMapSize settings.cellSize $ (settings.mapPadding <#> (_ * 2.0))
+                  + settings.backgroundSize
+              )
+        , selection:
+          { selectedPiece: Nothing
+          , selectedCell: Nothing
+          }
+        , settings
         }
     , render
     , eval:
@@ -98,88 +108,107 @@ component =
 render :: forall m cs. MonadEffect m => State -> H.ComponentHTML Action cs m
 render state =
   SE.svg
-    [ SA.height $ state.windowSize !! d0
-    , SA.width $ state.windowSize !! d1
-    , HP.id_ "board"
-    , toViewBox state.windowSize state.camera
+    [ SA.height $ state.settings.windowSize !! d1
+    , SA.width $ state.settings.windowSize !! d0
+    , SA.class_ "board"
+    , toViewBox state.settings.windowSize state.camera
     , HE.onWheel $ HandleScroll >>> Just
     , HE.onMouseMove $ HandleMouseMove >>> Just
     ]
-    [ renderBackgroundMap state.mapPadding state.backgroundMap
-    , renderGameMap state.cellSize state.selectedCell state.gameMap
+    [ renderBackgroundMap state.settings
+    , renderGameMap state.settings state.selection state.gameMap
     ]
 
-renderGameMap :: forall m cs. Number -> Maybe SelectionState -> GameMap -> H.ComponentHTML Action cs m
-renderGameMap cellSize selectionState (GameMap gameMap) =
-  SE.g [] $ join
+renderGameMap ::
+  forall m cs. RenderSettings -> SelectionState -> GameMap -> H.ComponentHTML Action cs m
+renderGameMap settings selection (GameMap gameMap) =
+  go $ join
     $ flip Array.mapWithIndex gameMap \x inner ->
-        join
-          $ flip Array.mapWithIndex inner \y cellData -> renderCell cellData x y
+        flip Array.mapWithIndex inner \y cellData -> renderCell settings selection cellData x y
   where
-  renderCell cellData x y = Array.cons hexagon content
+  go svg = SE.g [] $ (svg <#> _.hexagon) <> pieces
     where
-    hexagon =
-      renderFlatHexagon cellSize (vec2 screenX screenY)
-        [ SA.class_ classes
-        , HE.onClick
-            $ \event ->
-                Just
-                  if MouseEvent.ctrlKey event then
-                    ChangeCellData (Tuple x y)
-                  else
-                    SelectCell (Tuple x y)
-        , HE.onMouseMove $ HandleMouseMove >>> Just
-        ]
+    pieces = join $ _.pieces <$> svg
 
-    content = case cellData of
-      EmptyCell -> []
-      GamePiece ->
-        [ SE.rect
-            [ SA.x (screenX - pieceWidth / 2.0)
-            , SA.y (screenY - pieceHeight / 2.0)
-            , SA.height pieceHeight
-            , SA.width pieceWidth
-            , SA.class_ "board__piece"
-            ]
-        ]
-        where
-        pieceHeight = cellSize * 1.2
+renderCell ::
+  forall m cs.
+  RenderSettings ->
+  SelectionState ->
+  Array { color :: SA.Color } ->
+  Int ->
+  Int ->
+  { pieces :: Array (H.ComponentHTML Action cs m)
+  , hexagon :: H.ComponentHTML Action cs m
+  }
+renderCell settings selection cellData x y = { pieces, hexagon }
+  where
+  hexagon =
+    renderFlatHexagon settings.cellSize (vec2 screenX screenY)
+      [ SA.class_ classes
+      , HE.onClick
+          $ \event ->
+              Just
+                if MouseEvent.ctrlKey event then
+                  AddPiece (Tuple x y)
+                else
+                  SelectCell (Tuple x y)
+      , HE.onMouseMove $ HandleMouseMove >>> Just
+      ]
 
-        pieceWidth = cellSize
+  pieces =
+    flip Array.mapWithIndex cellData \index piece ->
+      let
+        offset = settings.stackedPieceOffset * toNumber index
+      in
+        SE.rect
+          [ SA.x $ (screenX - settings.cellSize / 2.0) + offset
+          , SA.y $ (screenY - settings.cellSize / 2.0) - offset
+          , SA.height settings.cellSize
+          , SA.width settings.cellSize
+          , SA.class_ $ "board__piece"
+              <> if selection.selectedPiece == Just { x, y, index } then
+                  " board__piece--selected"
+                else
+                  ""
+          , SA.fill $ Just piece.color
+          , HE.onClick $ const $ Just $ SelectPiece { x, y, index }
+          ]
 
-    classes =
-      joinWith " " $ append [ "board__hexagon" ] $ fromMaybe [] $ selectionState
-        <#> \selection ->
-            if selection.position == Tuple x y then
-              [ "board__hexagon--selected" ]
+  classes =
+    joinWith " " $ append [ "board__hexagon" ] $ fromMaybe [] $ selection.selectedCell
+      <#> \selectedCell ->
+          if selectedCell.position == Tuple x y then
+            [ "board__hexagon--selected" ]
+          else
+            if Set.member (Tuple x y) selectedCell.neighbours then
+              [ "board__hexagon--selection-neighbour" ]
             else
-              if Set.member (Tuple x y) selection.neighbours then
-                [ "board__hexagon--selection-neighbour" ]
-              else
-                []
+              []
 
-    verticalSize = cellSize * sqrt 3.0
+  screenX = settings.cellSize * (1.5 * toNumber x + 1.0)
 
-    screenX = cellSize * (1.5 * toNumber x + 1.0)
+  screenY = settings.cellSize * sqrt 3.0 * (toNumber y + if odd x then 1.0 else 0.5)
 
-    screenY = verticalSize * (toNumber y + if odd x then 1.0 else 0.5)
-
-renderBackgroundMap :: forall m cs. Vec2 Number -> BackgroundMap -> H.ComponentHTML Action cs m
-renderBackgroundMap mapPadding (BackgroundMap { width, height, url }) =
+renderBackgroundMap :: forall m cs. RenderSettings -> H.ComponentHTML Action cs m
+renderBackgroundMap settings =
   SE.foreignObject
-    [ SA.width $ toNumber width
-    , SA.height $ toNumber height
-    , SA.x $ (mapPadding !! d0) / 2.0
-    , SA.y $ (mapPadding !! d1) / 2.0
+    [ SA.width width
+    , SA.height height
+    , SA.x $ settings.mapPadding !! d0
+    , SA.y $ settings.mapPadding !! d1
     ]
     [ HH.object
         [ HP.type_ (MediaType "image/svg+xml")
-        , HP.attr (AttrName "data") ("assets/" <> url)
-        , HP.width width
-        , HP.height height
+        , HP.attr (AttrName "data") ("assets/" <> settings.backgroundUrl)
+        , HP.width $ floor width
+        , HP.height $ floor height
         ]
         []
     ]
+  where
+  width = settings.backgroundSize !! d0
+
+  height = settings.backgroundSize !! d1
 
 hexagonCorner :: Number -> Int -> Vec2 Number -> Vec2 Number
 hexagonCorner size nth center =
@@ -218,12 +247,11 @@ renderFlatHexagon size center props =
 
 handleAction :: forall cs o m. MonadEffect m => Action → H.HalogenM State Action cs o m Unit
 handleAction = case _ of
-  Initialize -> do
-    pure unit
+  Initialize -> pure unit
   HandleMouseDown -> pure unit
   HandleMouseUp -> pure unit
   HandleMouseMove event -> do
-    { lastMousePosition, windowSize, backgroundMap: BackgroundMap background } <- get
+    { lastMousePosition } <- get
     let
       mouseButtonState = MouseEvent.buttons event
 
@@ -250,16 +278,14 @@ handleAction = case _ of
               )
               state.camera
           }
-  ChangeCellData (Tuple x y) -> do
+  AddPiece (Tuple x y) -> do
     modify_
-      $ over (prop _gameMap <<< _Newtype <<< ix x <<< ix y) case _ of
-          EmptyCell -> GamePiece
-          GamePiece -> EmptyCell
+      $ over (prop _gameMap <<< _Newtype <<< ix x <<< ix y)
+      $ flip Arra.snoc { color: SA.RGB 124 255 115 }
   SelectCell position -> do
-    modify_ \state ->
-      state
-        { selectedCell =
-          if (state.selectedCell <#> _.position) == Just position then
+    modify_
+      $ over (prop _selection <<< prop _selectedCell) \selectedCell ->
+          if (selectedCell <#> _.position) == Just position then
             Nothing
           else
             Just
@@ -269,4 +295,16 @@ handleAction = case _ of
                   $ neighbours
                   $ uncurry vec2 position
               }
-        }
+  SelectPiece position -> do
+    modify_
+      $ over (prop _selection <<< prop _selectedPiece) \oldSelection ->
+          if oldSelection == Just position then Nothing else Just position
+
+_selectedCell :: SProxy "selectedCell"
+_selectedCell = SProxy
+
+_selectedPiece :: SProxy "selectedPiece"
+_selectedPiece = SProxy
+
+_selection :: SProxy "selection"
+_selection = SProxy

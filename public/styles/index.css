@@ -6,11 +6,15 @@ body {
   height: 100vh;
   width: 100vw;
   overflow: hidden;
-  background: #1a1730;
+  background: black;
 }
 
 object {
   user-select: none;
+}
+
+.board {
+  background: #1a1730;
 }
 
 .board__hexagon {
@@ -41,7 +45,15 @@ object {
 }
 
 .board__piece {
-  fill: none;
   stroke: #1e88e5;
-  stroke-width: 3;
+  stroke-width: 2;
+  fill-opacity: 0.9;
+}
+
+.board__piece--selected {
+  stroke-width: 4;
+}
+
+.board__piece:hover {
+  fill-opacity: 1;
 }
