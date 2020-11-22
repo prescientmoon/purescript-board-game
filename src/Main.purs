@@ -13,7 +13,7 @@ main =
     body <- HA.awaitBody
     runUI Board.component input body
   where
-  input :: Board.RenderSettings
+  input :: Board.Input
   input =
     { backgroundUrl: "romania.svg"
     , backgroundSize: vec2 1000.0 500.0

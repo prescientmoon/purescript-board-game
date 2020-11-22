@@ -10,11 +10,14 @@ import Data.Vec (vec2, (!!))
 import Halogen.Svg.Attributes (Color)
 import Math (sqrt)
 
-type CellData
-  = Array { color :: Color }
+type Piece
+  = { color :: Color }
+
+type Cell
+  = Array Piece
 
 newtype GameMap
-  = GameMap (Array (Array CellData))
+  = GameMap (Array (Array Cell))
 
 generateMap :: Vec2 Int -> GameMap
 generateMap size =
@@ -44,6 +47,9 @@ neighbours position = directions <#> (_ + position)
     , vec2 (-1) 0
     , vec2 0 1
     ]
+
+type PiecePosition
+  = { x :: Int, y :: Int, index :: Int }
 
 -- Typeclass instances
 derive instance newtypeGameMap :: Newtype GameMap _
