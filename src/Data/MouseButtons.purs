@@ -1,5 +1,5 @@
 -- | The web mouse api encodes the mouse state as a bitfield. 
--- | This module contains a few helpers for working with those.
+-- | This module contains a few helpers for working with it easier.
 module Data.MouseButton
   ( MouseButton(..)
   , isPressed

@@ -74,7 +74,7 @@ type SelectionState
 -- State related to dragging pieces aruond.
 type DragState
   = { coordinates :: PieceCoordinates -- The coordinates of the piece the user is curently dragging
-      -- To start dragging a piece, the mouse button is pressed while the mouse if anywhere over that pice.
+      -- To start dragging a piece, the mouse button needs to be pressed while the mouse is anywhere over it.
       -- This field represents the distance from the mouse to the corner of the piece
       -- We need this for rendering
     , cornerOffset :: Vec2 Number 
