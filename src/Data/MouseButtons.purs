@@ -1,5 +1,5 @@
--- | THe web mouse api encodes the mouse state as a bitfield. 
--- | This module contains a few helper for working with those.
+-- | The web mouse api encodes the mouse state as a bitfield. 
+-- | This module contains a few helpers for working with those.
 module Data.MouseButton
   ( MouseButton(..)
   , isPressed
@@ -13,9 +13,8 @@ data MouseButton
   = LeftMouseButton
   | RightMouseButton
 
--- This is here for nicer docs
-type RawMouseState
-  = Int
+-- | The button state provided by the browser.
+type RawMouseState = Int
 
 -- | Check if there's no button pressed.
 nothingPressed :: RawMouseState -> Boolean
@@ -25,6 +24,7 @@ nothingPressed = (==) 0
 isPressed :: MouseButton -> RawMouseState -> Boolean
 isPressed button bits = bits `and` buttonCode /= 0
   where
+  -- Here we convert from our own representation to the browser one.
   buttonCode = case button of
     LeftMouseButton -> 1
     RightMouseButton -> 2

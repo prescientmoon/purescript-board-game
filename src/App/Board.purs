@@ -1,29 +1,27 @@
 module App.Board where
 
 import Prelude
-import Camera (Camera, Vec2, defaultCamera, screenPan, toViewBox, toWorldCoordinates, zoomOn)
-import Component.Utils (intervalEventSource, maybeElement)
-import Data.Array as Arra
+
+import Camera (Camera, defaultCamera, pan, screenPan, toViewBox, toWorldCoordinates, zoomOn)
+import Component.Utils (getMousePosition, intervalEventSource, joinClasses, maybeElement)
+import Control.MonadZero (guard)
 import Data.Array as Array
 import Data.FunctorWithIndex (mapWithIndex)
-import Data.GameMap (GameMap(..), PiecePosition, Piece, generateMap, maximumMapSize, neighbours)
+import Data.GameMap (GameMap(..), Piece, PieceCoordinates, Cell, _cell, generateMap, hexagonCorner, maximumMapSize, neighbours)
 import Data.Int (floor, odd, toNumber)
 import Data.Lens (over, set)
-import Data.Lens.Index (ix)
-import Data.Lens.Iso.Newtype (_Newtype)
 import Data.Lens.Record (prop)
-import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isNothing)
 import Data.MediaType (MediaType(..))
 import Data.MouseButton (MouseButton(..), isPressed)
-import Data.Set (Set)
-import Data.Set as Set
-import Data.String (joinWith)
 import Data.Symbol (SProxy(..))
 import Data.Time.Duration (Milliseconds)
+import Data.Traversable (traverse_)
 import Data.Tuple (Tuple(..), uncurry)
-import Data.Typelevel.Num (D6, d0, d1, d5)
-import Data.Vec (Vec, vec2, (!!))
+import Data.Typelevel.Num (d0, d1)
+import Data.Vec (vec2, (!!))
 import Data.Vec as Vec
+import Data.Vec2 (Vec2)
 import Effect.Aff.Class (class MonadAff)
 import Effect.Class (class MonadEffect)
 import Halogen (AttrName(..), get, gets, modify_)
@@ -34,37 +32,53 @@ import Halogen.HTML.Properties as HP
 import Halogen.Svg.Attributes as SA
 import Halogen.Svg.Elements as SE
 import Halogen.Svg.Indexed as SI
-import Math (cos, pi, sin, sqrt)
-import Web.UIEvent.MouseEvent (MouseEvent)
+import Math (sqrt)
 import Web.UIEvent.MouseEvent as MouseEvent
-import Web.UIEvent.WheelEvent (WheelEvent)
-import Web.UIEvent.WheelEvent as WheelEent
+import Web.UIEvent.WheelEvent as WheelEvent
 
+-- | The 2 supported ways of loading background maps.
+data BackgroundMapUrl 
+  = Svg String
+  | Bitmap String 
+
+-- Settings passed by the parent
 type Input
-  = { cellSize :: Number
-    , mapPadding :: Vec2 Number
-    , stackedPieceOffset :: Number
-    , windowSize :: Vec2 Number
-    , backgroundUrl :: String
-    , backgroundSize :: Vec2 Number
+  = { cellSize :: Number -- How big a hexagon is
+    , mapPadding :: Vec2 Number -- How much bigger the hexaon map is than the background map.
+    , stackedPieceOffset :: Number -- How much to offset each piece in a piece stack (relative to the previous piece)
+    , zoomFactor :: Number -- How much to zoom per scroll event
+    , size :: Vec2 Number -- How big the svg element should be 
+    , backgroundUrl :: BackgroundMapUrl -- The path to the background svg (usually assets/[something])
+    , backgroundSize :: Vec2 Number -- The size (in world coordinates) of the background map
+     -- How far from the border the mouse needs to be 
+     -- when dragging a piece for us to automatically pan in that direction
     , borderScrollAreaSize :: Number
+    -- The number of pixels to pan every tick when border scrolling
     , borderScrollSpeed :: Number
+    -- The number of milliseconds before we rerun the border scroll logic
     , borderScrollInterval :: Milliseconds
     }
 
+-- State which has to do with selected stuff
 type SelectionState
+      -- The cell to highlight
   = { selectedCell ::
       Maybe
-        { position :: Tuple Int Int
-        , neighbours :: Set (Tuple Int Int)
+        { position :: Tuple Int Int -- The coordinates of the cell (highlighted in yellow)
+        , neighbours :: Array (Vec2 Int) -- The neighbours of the cell (highlighted in red)
         }
-    , selectedPiece :: Maybe PiecePosition
+      -- The coordinates of the currently selected piece
+    , selectedPiece :: Maybe PieceCoordinates
     }
 
+-- State related to dragging pieces aruond.
 type DragState
-  = { position :: PiecePosition
-    , cornerOffset :: Vec2 Number
-    , piece :: Piece
+  = { coordinates :: PieceCoordinates -- The coordinates of the piece the user is curently dragging
+      -- To start dragging a piece, the mouse button is pressed while the mouse if anywhere over that pice.
+      -- This field represents the distance from the mouse to the corner of the piece
+      -- We need this for rendering
+    , cornerOffset :: Vec2 Number 
+    , piece :: Piece -- The actual data of the piece we are moving
     }
 
 type State
@@ -78,15 +92,22 @@ type State
 
 data Action
   = Initialize
-  | BorderScroll
-  | HandleMouseDown
-  | HandleMouseUp
-  | HandleMouseMove MouseEvent.MouseEvent
-  | HandleScroll WheelEvent
-  | AddPiece (Tuple Int Int)
-  | SelectCell (Tuple Int Int)
-  | SelectPiece PiecePosition
-  | DragPiece (Vec2 Number) PiecePosition Piece MouseEvent
+  | BorderScroll 
+  | MouseUp
+  | MouseMove MouseEvent.MouseEvent
+  | Zoom WheelEvent.WheelEvent -- Fires when the user uses the scroll wheel
+  | AddPiece (Tuple Int Int) -- Fires when ctrl+click -ing on a hexaon. Here for debugging.
+  | SelectCell (Tuple Int Int) 
+  | SelectPiece PieceCoordinates
+  | DragPiece -- Fires when the user starts dragging a piece 
+      { corner :: Vec2 Number -- The position of the piece we started to drag
+      , coordinates :: PieceCoordinates -- The coordinates on the hexagonal grid
+      , piece :: Piece -- The data carried by the piece
+      , event :: MouseEvent.MouseEvent 
+      }
+    -- The reason the index is a (Maybe Int) instead of an Int is because we can either 
+    -- drop a piece on top of another piece (which has an index in the piece stack on it's hexagon)
+    -- or on top of an empty hexagon (which only has the x and y coordinates)
   | DropPiece { x :: Int, y :: Int, index :: Maybe Int }
 
 component :: forall q o m. MonadAff m => H.Component HH.HTML q Input o m
@@ -102,125 +123,163 @@ component =
             }
     }
 
+-- Creates the initial state of the component from the input passed by the parent
 initialState :: Input -> State
 initialState settings =
-  { camera: defaultCamera (Tuple 0.3 4.0)
+  { camera: defaultCamera (Tuple 0.3 4.0) 
   , lastMousePosition: zero
-  , gameMap:
-    generateMap
-      $ ( maximumMapSize settings.cellSize $ (settings.mapPadding <#> (_ * 2.0))
-            + settings.backgroundSize
-        )
+  , gameMap: let
+        -- The grid has the size of the background map + the size of the padding on both sides.
+        gridSize = map (_ * 2.0) settings.mapPadding + settings.backgroundSize
+      in generateMap $ maximumMapSize settings.cellSize gridSize
   , selection:
     { selectedPiece: Nothing
     , selectedCell: Nothing
     }
-  , settings
   , dragState: Nothing
+  , settings
   }
 
 render :: forall m cs. MonadEffect m => State -> H.ComponentHTML Action cs m
 render state =
   SE.svg
-    [ SA.height $ state.settings.windowSize !! d1
-    , SA.width $ state.settings.windowSize !! d0
-    , SA.class_ "board"
-    , toViewBox state.settings.windowSize state.camera
-    , HE.onWheel $ HandleScroll >>> Just
-    , HE.onMouseMove $ HandleMouseMove >>> Just
-    , HE.onMouseUp $ const $ Just HandleMouseUp
+    [ SA.height $ state.settings.size !! d1
+    , SA.width $ state.settings.size !! d0
+    , toViewBox state.settings.size state.camera
+    , HE.onWheel $ Zoom >>> Just
+    , HE.onMouseMove $ MouseMove >>> Just
+    , HE.onMouseUp $ const $ Just MouseUp
+    , SA.class_ "board" 
     ]
     [ renderBackgroundMap state.settings
     , renderGameMap state.settings state.selection state.gameMap
+    -- We use maybeElement here to only render this while we are dragging something
     , maybeElement state.dragState
-        ( \a ->
+        ( \dragState ->
             renderDraggedPiece state.settings.cellSize
+              -- The function expects world coordinates but we save the screen coordinates
+              -- So we have to convert them
               (toWorldCoordinates state.camera state.lastMousePosition)
-              a
+              dragState
         )
     ]
 
-renderGameMap ::
-  forall m cs. Input -> SelectionState -> GameMap -> H.ComponentHTML Action cs m
+-- | Renders the hexagonal grid
+renderGameMap :: forall m cs. Input -> SelectionState -> GameMap -> H.ComponentHTML Action cs m
 renderGameMap settings selection (GameMap gameMap) =
-  go $ join
-    $ Array.reverse
-    $ flip Array.mapWithIndex gameMap \x inner ->
-        flip Array.mapWithIndex inner \y cellData -> renderCell settings selection cellData x y
+  arrangeShapes
+    $ join
+    -- If we don't render from right to left we run into issues like the one in this screenshot:
+    --  https://cdn.discordapp.com/attachments/672889285438865453/780428402343018516/unknown.png
+    $ Array.reverse 
+    $ flip Array.mapWithIndex gameMap \x ->
+        Array.mapWithIndex \y cell -> renderCell settings selection cell (Tuple x y)
   where
-  go svg = SE.g [] $ (svg <#> _.hexagon) <> pieces
+  arrangeShapes shapes = SE.g [] $ hexagons <> pieces
     where
-    pieces = join $ _.pieces <$> svg
+    hexagons = _.hexagon <$> shapes
+    pieces = join $ _.pieces <$> shapes
 
+-- | Renders a single cell of the hexagonal map
 renderCell ::
   forall m cs.
   Input ->
   SelectionState ->
-  Array { color :: SA.Color } ->
-  Int ->
-  Int ->
+  Cell ->
+  Tuple Int Int ->
+  -- All the pieces need to be rendered after all the hexagons to prevent some weird overlapping issues
+  -- So we just return both elements and let the parent handle the ordering
   { pieces :: Array (H.ComponentHTML Action cs m)
   , hexagon :: H.ComponentHTML Action cs m
   }
-renderCell settings selection cellData x y = { pieces, hexagon }
+renderCell settings selection cell (Tuple x y) = { pieces, hexagon }
   where
   hexagon =
-    renderFlatHexagon settings.cellSize (vec2 centerX centerY)
+    renderHexagon settings.cellSize (vec2 centerX centerY)
       [ SA.class_ classes
-      , HE.onClick
-          $ \event ->
-              Just
-                if MouseEvent.ctrlKey event then
-                  AddPiece (Tuple x y)
-                else
-                  SelectCell (Tuple x y)
-      , HE.onMouseMove $ HandleMouseMove >>> Just
+      , HE.onClick $ Just <<< onClick      
+      , HE.onMouseMove $ MouseMove >>> Just
+      -- Handles the case of dropping a piece directly on a heaxgon
       , HE.onMouseUp $ const $ Just $ DropPiece { x, y, index: Nothing }
       ]
 
+  -- If the ctrl key is pressed we add a new piece to the hexagon
+  -- else we highlight the hexaon and it's neighbours
+  onClick event | MouseEvent.ctrlKey event = AddPiece $ Tuple x y
+                | otherwise = SelectCell $ Tuple x y
+ 
   pieces =
-    flip Array.mapWithIndex cellData \index piece ->
-      let
-        position = { x, y, index }
+    flip Array.mapWithIndex cell \index piece -> 
+      renderPiece settings selection (Tuple centerX centerY) { x, y, index } piece
 
-        offset = settings.stackedPieceOffset * toNumber index
+  -- There is no SA.classes prop so we need to join the classes manually
+  classes = joinClasses
+      [ Just "board__hexagon"
+      , extraClass ]
+  
+  -- A dynamic className used to style each state diferently from css
+  extraClass = case selection.selectedCell of
+      Just selectedCell 
+        -- The case when this is the selected cell (highlighted with yellow)
+        | selectedCell.position == Tuple x y -> Just "board__hexagon--selected" 
+        -- The case when this is a neighbour of the selected cell (highlighted with red) 
+        | Array.elem (vec2 x y) selectedCell.neighbours -> Just "board__hexagon--selection-neighbour"
+      _ -> Nothing
 
-        cornerX = (centerX - settings.cellSize / 2.0) + offset
-
-        cornerY = (centerY - settings.cellSize / 2.0) - offset
-      in
-        SE.rect
-          [ SA.x cornerX
-          , SA.y cornerY
-          , SA.height settings.cellSize
-          , SA.width settings.cellSize
-          , SA.class_ $ "board__piece"
-              <> if selection.selectedPiece == Just position then
-                  " board__piece--selected"
-                else
-                  ""
-          , SA.fill $ Just piece.color
-          , HE.onClick $ const $ Just $ SelectPiece position
-          , HE.onMouseDown $ Just <<< DragPiece (vec2 cornerX cornerY) position piece
-          , HE.onMouseUp $ const $ Just $ DropPiece { x, y, index: Just index }
-          ]
-
-  classes =
-    joinWith " " $ append [ "board__hexagon" ] $ fromMaybe [] $ selection.selectedCell
-      <#> \selectedCell ->
-          if selectedCell.position == Tuple x y then
-            [ "board__hexagon--selected" ]
-          else
-            if Set.member (Tuple x y) selectedCell.neighbours then
-              [ "board__hexagon--selection-neighbour" ]
-            else
-              []
-
+  -- Based on https://www.redblobgames.com/grids/hexagons
   centerX = settings.cellSize * (1.5 * toNumber x + 1.0)
-
   centerY = settings.cellSize * sqrt 3.0 * (toNumber y + if odd x then 1.0 else 0.5)
 
--- | Renders the piece we are dragging right now.
+-- | Renders an individual game piece
+renderPiece :: 
+  forall cs m.
+  Input -> 
+  SelectionState -> 
+  Tuple Number Number -> 
+  PieceCoordinates -> 
+  Piece -> 
+  H.ComponentHTML Action cs m
+renderPiece settings selection (Tuple centerX centerY) coordinates piece =
+  SE.rect
+    [ SA.x cornerX
+    , SA.y cornerY  
+    , SA.height settings.cellSize
+    , SA.width settings.cellSize
+    , SA.class_ classes 
+    -- We use the color the piece carries around as the fill
+    , SA.fill $ Just piece.color
+    , HE.onMouseDown onMouseDown
+    , HE.onClick $ const $ Just $ SelectPiece coordinates
+    -- This handles dropping another piece on top of this one
+    , HE.onMouseUp $ const $ Just 
+        $ DropPiece 
+            { x: coordinates.x
+            , y: coordinates.y
+            , index: Just coordinates.index }
+    ]
+
+  where
+  classes = joinClasses 
+    [ Just "board__piece"
+    -- This class is only added when this piece is selected
+    , "board__piece--selected" <$ guard (selection.selectedPiece == Just coordinates)
+    ]
+
+  onMouseDown event 
+    = Just $ DragPiece 
+        { corner: vec2 cornerX cornerY
+        , coordinates
+        , piece
+        , event }
+
+  -- The offset from the previous piece in the stack
+  offset = settings.stackedPieceOffset * toNumber coordinates.index
+
+  cornerX = (centerX - settings.cellSize / 2.0) + offset
+  -- we want the stack to go towards top-right, so we invert the y axis
+  cornerY = (centerY - settings.cellSize / 2.0) - offset 
+
+-- | Renders the piece the user is currently dragging.
 renderDraggedPiece :: forall cs m. Number -> Vec2 Number -> DragState -> H.ComponentHTML Action cs m
 renderDraggedPiece cellSize mousePosition { cornerOffset, piece } =
   SE.rect
@@ -228,176 +287,225 @@ renderDraggedPiece cellSize mousePosition { cornerOffset, piece } =
     , SA.y $ position !! d1
     , SA.height cellSize
     , SA.width cellSize
-    , SA.class_ $ "board__piece board__piece--dragged"
+    , SA.class_ "board__piece board__piece--dragged"
     , SA.fill $ Just piece.color
     ]
   where
+  -- This is the reason we kept track of how far the corner of the piece was from the mouse
+  -- (When the piece was piecked up)
   position = mousePosition - cornerOffset
 
 renderBackgroundMap :: forall m cs. Input -> H.ComponentHTML Action cs m
 renderBackgroundMap settings =
+  -- We use foreign objects to render a non-svg element inside svg.
+  -- The reason I prefer this over just rendering the background outside the svg
+  -- is so I don't have to replicate the zoom & pan logic in 2 different places
   SE.foreignObject
     [ SA.width width
     , SA.height height
     , SA.x $ settings.mapPadding !! d0
     , SA.y $ settings.mapPadding !! d1
     , SA.class_ "board__background"
-    ]
-    [ HH.object
+    ] [ image ]
+  where
+  image = case settings.backgroundUrl of
+    Svg svgPath -> 
+      HH.object -- the <object> tag can be used to load an external svg into the dom
         [ HP.type_ (MediaType "image/svg+xml")
-        , HP.attr (AttrName "data") ("assets/" <> settings.backgroundUrl)
+        -- Halogen doesn't have this attribute so we create it manually
+        , HP.attr (AttrName "data") svgPath
+        -- Halogen expect those to be ints so we floor them
+        , HP.width $ floor width
+        , HP.height $ floor height
+        ] []
+    Bitmap bitmapPath -> 
+      HH.img 
+        [ HP.src bitmapPath
         , HP.width $ floor width
         , HP.height $ floor height
         ]
-        []
-    ]
-  where
-  width = settings.backgroundSize !! d0
 
+  width = settings.backgroundSize !! d0
   height = settings.backgroundSize !! d1
 
-hexagonCorner :: Number -> Int -> Vec2 Number -> Vec2 Number
-hexagonCorner size nth center =
-  center
-    + vec2
-        (size * cos angle)
-        (size * sin angle)
-  where
-  angle = toNumber nth * pi / 3.0
-
-renderFlatHexagon ::
+-- | Creaes a hexagon using svg.
+-- | Accepts an external array of extra attributes 
+renderHexagon ::
   forall cs m.
   Number ->
   Vec2 Number ->
-  Array
-    ( HP.IProp
-        SI.SVGpath
-        Action
-    ) ->
+  Array (HP.IProp SI.SVGpath Action) -> 
   H.ComponentHTML Action cs m
-renderFlatHexagon size center props =
+renderHexagon size center additionalAttributes =
   SE.path
-    $ Array.snoc props
-    $ SA.d
-    $ SA.Abs
-    <$> Array.snoc commands SA.Z
+    $ Array.snoc additionalAttributes
+    $ SA.d -- this attribute holds the commands for path
+    $ SA.Abs -- make all the commands absolute
+    -- we add a Z command to the end, which draws a line to where we started, completing the hexagon
+    <$> Array.snoc commands SA.Z 
   where
-  commands =
-    Vec.toArray
-      $ flip mapWithIndex vec \index point ->
-          (if index == 0 then SA.M else SA.L) (point !! d0)
-            (point !! d1)
+  -- The M command moves us to a point
+  -- The L command draws a line to a point
+  -- We move to the first corner and then keep drawing lines to the next
+  commands = flip mapWithIndex points \index point ->
+    (if index == 0 then SA.M else SA.L)  
+      (point !! d0)
+      (point !! d1)
 
-  vec :: Vec D6 (Vec2 Number)
-  vec = Vec.range d0 d5 <#> \nth -> hexagonCorner size nth center
+  -- Here we calculate the positions of all 6 corners in the hexaon
+  points :: Array (Vec2 Number)
+  points = Array.range 0 5 <#> \nth -> hexagonCorner size nth center
 
 handleAction :: forall cs o m. MonadAff m => Action → H.HalogenM State Action cs o m Unit
 handleAction = case _ of
   Initialize -> do
     interval <- gets _.settings.borderScrollInterval
+    -- This will fire the BorderScroll action every [interval] milliseconds
     void $ H.subscribe $ BorderScroll <$ intervalEventSource interval
   BorderScroll -> do
     { lastMousePosition, settings, dragState } <- get
+    -- We only borderScroll while dragging a piece
     unless (isNothing dragState) do
-      let
-        panVector =
-          ((*) settings.borderScrollSpeed)
-            <$> Vec.zipWith (getPanDirection settings.borderScrollAreaSize)
-                lastMousePosition
-                settings.windowSize
-      modify_ $ over (prop _camera) $ screenPan panVector
-  HandleMouseUp -> do
-    modify_ $ set (prop _dragState) Nothing
-  HandleMouseDown -> pure unit
-  HandleMouseMove event -> do
+      let 
+        -- The directions (on both axis) to border scroll towards
+        direction = 
+          Vec.zipWith 
+            -- This can be eta-reduced but I'm thinking it might hinder readability
+            (\mousePosition size -> getPanDirection settings.borderScrollAreaSize mousePosition size)
+            lastMousePosition
+            settings.size
+
+        -- Once we have the direction we can just scale it up by the speed and get the delta to pan
+        vector = map (_ * settings.borderScrollSpeed) direction
+      
+      modify_ $ over (prop _camera) $ pan vector
+  -- If this fires it means the user dropped a piece outside the hexagon grid,
+  -- so we just clear the dragState
+  MouseUp -> modify_ $ set (prop _dragState) Nothing
+  MouseMove event -> do
     { lastMousePosition, dragState } <- get
     let
       mouseButtonState = MouseEvent.buttons event
+      mousePosition = getMousePosition event
 
-      mousePosition = toNumber <$> vec2 (MouseEvent.clientX event) (MouseEvent.clientY event)
+      lmbIsPressed = isPressed LeftMouseButton mouseButtonState
 
-      updateCamera camera
-        | isPressed LeftMouseButton mouseButtonState = screenPan (mousePosition - lastMousePosition) camera
+      panCamera :: Camera -> Camera
+      panCamera camera
+        -- when the mouse button is pressed we ban
+        -- The amount we pan by is simply the difference between the mouse positions
+        | lmbIsPressed = screenPan (mousePosition - lastMousePosition) camera
         | otherwise = camera
 
+      update :: State -> State
       update state
-        | isNothing dragState = over (prop _camera) updateCamera state
-        | not (isPressed LeftMouseButton mouseButtonState) = set (prop _dragState) Nothing state
+        -- We only pan if we are not dragging a game piece
+        | isNothing dragState = over (prop _camera) panCamera state
+
+        {- So it's possible to:
+          - start dragging a piece
+          - move the mouse outside the browser window
+          - release the mouse
+          - move the mouse back inside the browser window
+
+          This can cause us to get in a state where the mouse is no longer pressed
+          but the piece the user was dragging is still following the mouse.
+
+          To fix this we simply make sure to clear 
+          the dragState if the user doesn't hold the left button 
+            (when the user moves the mouse back into the browser window we start getting mouse-move events again)
+        -}
+        | not lmbIsPressed = set (prop _dragState) Nothing state
         | otherwise = state
-    modify_ $ set (prop _lastMousePosition) mousePosition <<< update
-  HandleScroll event -> do
-    mousePosition <- gets _.lastMousePosition
-    let
-      delta = WheelEent.deltaY event
-    when (delta /= 0.0) do
-      modify_ \state ->
-        state
-          { camera =
-            zoomOn mousePosition
-              ( if delta < 0.0 then 1.1 else 1.0 / 1.1
-              )
-              state.camera
-          }
+
+      updateMousePosition :: State -> State
+      updateMousePosition = set (prop _lastMousePosition) mousePosition
+
+    -- Each call to modify_ causes a rerender, so to avoid waiting
+    -- for unnecessary rerenders we compose the updates into 1 call
+    modify_ $ updateMousePosition <<< update
+  Zoom event -> do
+    { lastMousePosition, settings } <- get
+
+    let 
+      delta = WheelEvent.deltaY event
+
+      factor | delta < 0.0 = settings.zoomFactor
+             | otherwise = 1.0 / settings.zoomFactor
+    
+    -- Delta is 0 when the user scrolls horizontally (on something like a touchpad)
+    unless (delta == 0.0) do
+      modify_ $ over (prop _camera) $ zoomOn lastMousePosition factor -- we zoom relative to the mouse position
+  -- For debugging purpouses, ctrl + clicking on a hexagon adds a new piece there
   AddPiece (Tuple x y) -> do
     modify_
-      $ over (prop _gameMap <<< _Newtype <<< ix x <<< ix y)
-      $ flip Arra.snoc { color: SA.RGB 124 255 115 }
+      $ over (prop _gameMap <<< _cell x y)
+      $ flip Array.snoc { color: SA.RGB 124 255 115 }
   SelectCell position -> do
     modify_
       $ over (prop _selection <<< prop _selectedCell) \selectedCell ->
+          -- If we clicked on the hexagon selected before we just unselect it
           if (selectedCell <#> _.position) == Just position then
             Nothing
           else
             Just
               { position
-              , neighbours:
-                Set.fromFoldable $ map (\v -> Tuple (v !! d0) (v !! d1))
-                  $ neighbours
-                  $ uncurry vec2 position
+              , neighbours: neighbours $ uncurry vec2 position
               }
   SelectPiece position -> do
     modify_
       $ over (prop _selection <<< prop _selectedPiece) \oldSelection ->
-          if oldSelection == Just position then Nothing else Just position
-  DragPiece cornerPosition coordinates piece event -> do
+          -- If we clicked on the piece selected before we just unselect it
+          if oldSelection == Just position then 
+            Nothing 
+          else 
+            Just position
+  DragPiece { corner, coordinates, piece, event } -> do
     camera <- gets _.camera
-    let
-      mousePosition = toWorldCoordinates camera $ toNumber <$> vec2 (MouseEvent.clientX event) (MouseEvent.clientY event)
+
+    let mousePosition = toWorldCoordinates camera $ getMousePosition event
+
     modify_ $ set (prop _dragState)
       $ Just
-          { position: coordinates
-          , cornerOffset: mousePosition - cornerPosition
+          { coordinates
+          , cornerOffset: mousePosition - corner
           , piece
           }
-  DropPiece dropAt -> do
-    dragState <- gets _.dragState
-    case dragState of
-      Just { position, piece }
-        | position.x /= dropAt.x || position.y /= dropAt.y ->
-          modify_ $ resetDragState
-            <<< over (prop _gameMap) (addToNewStack <<< removeFromOldStack)
+  DropPiece dropAt -> 
+    -- We only run this if we are dragging something
+    gets _.dragState >>= traverse_
+      \{ coordinates, piece } -> let
+        resetDragState = set (prop _dragState) Nothing
+
+        -- This removes the piece from the stack it came from
+        removeFromOldStack :: GameMap -> GameMap
+        removeFromOldStack =
+          over (_cell coordinates.x coordinates.y) \pieces ->
+            fromMaybe pieces $ Array.deleteAt coordinates.index pieces
+
+        -- This adds the piece to the stack it was dropped on
+        addToNewStack :: GameMap -> GameMap
+        addToNewStack =
+          over (_cell coordinates.x coordinates.y) \pieces ->
+            fromMaybe pieces $ Array.insertAt index piece pieces
           where
-          resetDragState = set (prop _dragState) Nothing
+          index = case dropAt.index of
+            -- If it was dropped on an empty hexagon it's going to be the first in the stack
+            Nothing -> 0
+            -- else it's going to sit next to the piece it was dropped onto
+            Just previousIndex -> previousIndex + 1
 
-          removeFromOldStack :: GameMap -> GameMap
-          removeFromOldStack =
-            over (_Newtype <<< ix position.x <<< ix position.y) \pieces ->
-              fromMaybe pieces $ Array.deleteAt position.index pieces
+        in modify_ $ resetDragState <<< over (prop _gameMap) (addToNewStack <<< removeFromOldStack)
 
-          addToNewStack :: GameMap -> GameMap
-          addToNewStack =
-            over (_Newtype <<< ix dropAt.x <<< ix dropAt.y) \pieces ->
-              fromMaybe pieces $ Array.insertAt (maybe 0 ((+) 1) dropAt.index) piece pieces
-      _ -> do
-        handleAction HandleMouseUp
-
+-- | Calculates the direction we should border scroll towards (positive / negative / zero)
 getPanDirection :: Number -> Number -> Number -> Number
 getPanDirection limit position maximum
   | position < limit = 1.0
   | position > maximum - limit = -1.0
   | otherwise = 0.0
 
--- SProxies
+-- SProxies for use with lenses
+-- I use a vscode snippet to quickly generate those
 _selectedCell :: SProxy "selectedCell"
 _selectedCell = SProxy
 
