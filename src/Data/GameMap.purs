@@ -5,7 +5,7 @@ module Data.GameMap where
 import Prelude
 
 import Data.Array as Array
-import Data.Int (even, floor, toNumber)
+import Data.Int (ceil, even, toNumber)
 import Data.Lens (Traversal')
 import Data.Lens.Index (ix)
 import Data.Lens.Iso.Newtype (_Newtype)
@@ -45,9 +45,11 @@ generateMap size =
 maximumMapSize :: Number -> Vec2 Number -> Vec2 Int
 maximumMapSize cellSize size = vec2 width height
   where
-  width = floor $ (size !! d0) / (2.0 * cellSize)
+  width = ceil $ (size !! d0 - cellSize / 2.0) / (1.5 * cellSize)
 
-  height = floor $ (size !! d1) / (sqrt 3.0 * cellSize)
+  height = ceil $ (size !! d1 - verticalSize / 2.0) / verticalSize 
+
+  verticalSize = sqrt 3.0 * cellSize
 
 -- | Get the coordinates of all the neighbours a cell has.
 neighbours :: Vec2 Int -> Array (Vec2 Int)

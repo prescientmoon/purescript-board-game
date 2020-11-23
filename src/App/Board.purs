@@ -16,7 +16,7 @@ import Data.MediaType (MediaType(..))
 import Data.MouseButton (MouseButton(..), isPressed)
 import Data.Symbol (SProxy(..))
 import Data.Time.Duration (Milliseconds)
-import Data.Traversable (traverse_)
+import Data.Traversable (for_)
 import Data.Tuple (Tuple(..), uncurry)
 import Data.Typelevel.Num (d0, d1)
 import Data.Vec (vec2, (!!))
@@ -471,9 +471,10 @@ handleAction = case _ of
           , cornerOffset: mousePosition - corner
           , piece
           }
-  DropPiece dropAt -> 
+  DropPiece dropAt -> do
     -- We only run this if we are dragging something
-    gets _.dragState >>= traverse_
+    dragState <- gets _.dragState   
+    for_ dragState
       \{ coordinates, piece } -> let
         resetDragState = set (prop _dragState) Nothing
 
@@ -486,14 +487,23 @@ handleAction = case _ of
         -- This adds the piece to the stack it was dropped on
         addToNewStack :: GameMap -> GameMap
         addToNewStack =
-          over (_cell coordinates.x coordinates.y) \pieces ->
+          over (_cell dropAt.x dropAt.y) \pieces ->
             fromMaybe pieces $ Array.insertAt index piece pieces
           where
           index = case dropAt.index of
             -- If it was dropped on an empty hexagon it's going to be the first in the stack
             Nothing -> 0
             -- else it's going to sit next to the piece it was dropped onto
-            Just previousIndex -> previousIndex + 1
+            Just previousIndex 
+            -- When we remove the piece from the stack it came from, 
+            -- all the pieces higher in the same stack have their indices decreased by one.
+            -- So we check if this is one of those, and if it is, we decrease it too
+            --  (previousIndex + 1 - 1 instead of previousIndex + 1)
+              | dropAt.x == coordinates.x && 
+                dropAt.y == coordinates.y && 
+                previousIndex >= coordinates.index -> previousIndex
+            -- In the default case, we want to place the piece on top of the one it was dropped onto, so we increase the indec by one
+              | otherwise -> previousIndex + 1
 
         in modify_ $ resetDragState <<< over (prop _gameMap) (addToNewStack <<< removeFromOldStack)
 
