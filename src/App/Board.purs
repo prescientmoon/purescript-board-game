@@ -1,9 +1,35 @@
-module App.Board where
+module App.Board
+  ( Action(..)
+  , BackgroundMapUrl(..)
+  , DragState
+  , Input
+  , SelectionState
+  , State
+  , _camera
+  , _dragState
+  , _gameMap
+  , _lastMousePosition
+  , _selectedCell
+  , _selectedPiece
+  , _selection
+  , component
+  , getPanDirection
+  , handleAction
+  , initialState
+  , render
+  , renderBackgroundMap
+  , renderCell
+  , renderDraggedPiece
+  , renderGameMap
+  , renderHexagon
+  , renderPiece
+  )
+  where
 
 import Prelude
 
 import Camera (Camera, defaultCamera, pan, screenPan, toViewBox, toWorldCoordinates, zoomOn)
-import Component.Utils (getMousePosition, intervalEventSource, joinClasses, maybeElement)
+import Component.Utils (getMousePosition, joinClasses, maybeElement)
 import Control.MonadZero (guard)
 import Data.Array as Array
 import Data.FunctorWithIndex (mapWithIndex)
@@ -15,14 +41,16 @@ import Data.Maybe (Maybe(..), fromMaybe, isNothing)
 import Data.MediaType (MediaType(..))
 import Data.MouseButton (MouseButton(..), isPressed)
 import Data.Symbol (SProxy(..))
-import Data.Time.Duration (Milliseconds)
+import Data.Time.Duration (Milliseconds(..))
 import Data.Traversable (for_)
 import Data.Tuple (Tuple(..), uncurry)
 import Data.Typelevel.Num (d0, d1)
 import Data.Vec (vec2, (!!))
 import Data.Vec as Vec
 import Data.Vec2 (Vec2)
-import Effect.Aff.Class (class MonadAff)
+import Control.Monad.Rec.Class (forever)
+import Effect.Aff (delay,forkAff)
+import Effect.Aff.Class (class MonadAff, liftAff)
 import Effect.Class (class MonadEffect)
 import Halogen (AttrName(..), get, gets, modify_)
 import Halogen as H
@@ -32,6 +60,7 @@ import Halogen.HTML.Properties as HP
 import Halogen.Svg.Attributes as SA
 import Halogen.Svg.Elements as SE
 import Halogen.Svg.Indexed as SI
+import Halogen.Subscription as HS
 import Math (sqrt)
 import Web.UIEvent.MouseEvent as MouseEvent
 import Web.UIEvent.WheelEvent as WheelEvent
@@ -110,7 +139,7 @@ data Action
     -- or on top of an empty hexagon (which only has the x and y coordinates)
   | DropPiece { x :: Int, y :: Int, index :: Maybe Int }
 
-component :: forall q o m. MonadAff m => H.Component HH.HTML q Input o m
+component :: forall q o m. MonadAff m => H.Component q Input o m
 component =
   H.mkComponent
     { initialState
@@ -146,10 +175,10 @@ render state =
     [ SA.height $ state.settings.size !! d1
     , SA.width $ state.settings.size !! d0
     , toViewBox state.settings.size state.camera
-    , HE.onWheel $ Zoom >>> Just
-    , HE.onMouseMove $ MouseMove >>> Just
-    , HE.onMouseUp $ const $ Just MouseUp
-    , SA.class_ "board" 
+    , HE.onWheel $ Zoom
+    , HE.onMouseMove $ MouseMove
+    , HE.onMouseUp $ const $ MouseUp
+    , SA.class_ $ H.ClassName "board" 
     ]
     [ renderBackgroundMap state.settings
     , renderGameMap state.settings state.selection state.gameMap
@@ -196,11 +225,11 @@ renderCell settings selection cell (Tuple x y) = { pieces, hexagon }
   where
   hexagon =
     renderHexagon settings.cellSize (vec2 centerX centerY)
-      [ SA.class_ classes
-      , HE.onClick $ Just <<< onClick      
-      , HE.onMouseMove $ MouseMove >>> Just
+      [ SA.class_ $ H.ClassName classes
+      , HE.onClick $ onClick      
+      , HE.onMouseMove $ MouseMove 
       -- Handles the case of dropping a piece directly on a heaxgon
-      , HE.onMouseUp $ const $ Just $ DropPiece { x, y, index: Nothing }
+      , HE.onMouseUp $ const $ DropPiece { x, y, index: Nothing }
       ]
 
   -- If the ctrl key is pressed we add a new piece to the hexagon
@@ -245,13 +274,13 @@ renderPiece settings selection (Tuple centerX centerY) coordinates piece =
     , SA.y cornerY  
     , SA.height settings.cellSize
     , SA.width settings.cellSize
-    , SA.class_ classes 
+    , SA.class_ $ H.ClassName classes 
     -- We use the color the piece carries around as the fill
-    , SA.fill $ Just piece.color
+    , SA.fill piece.color
     , HE.onMouseDown onMouseDown
-    , HE.onClick $ const $ Just $ SelectPiece coordinates
+    , HE.onClick $ const $ SelectPiece coordinates
     -- This handles dropping another piece on top of this one
-    , HE.onMouseUp $ const $ Just 
+    , HE.onMouseUp $ const  
         $ DropPiece 
             { x: coordinates.x
             , y: coordinates.y
@@ -266,7 +295,7 @@ renderPiece settings selection (Tuple centerX centerY) coordinates piece =
     ]
 
   onMouseDown event 
-    = Just $ DragPiece 
+    = DragPiece 
         { corner: vec2 cornerX cornerY
         , coordinates
         , piece
@@ -287,8 +316,8 @@ renderDraggedPiece cellSize mousePosition { cornerOffset, piece } =
     , SA.y $ position !! d1
     , SA.height cellSize
     , SA.width cellSize
-    , SA.class_ "board__piece board__piece--dragged"
-    , SA.fill $ Just piece.color
+    , SA.class_ $ H.ClassName "board__piece board__piece--dragged"
+    , SA.fill piece.color
     ]
   where
   -- This is the reason we kept track of how far the corner of the piece was from the mouse
@@ -305,7 +334,7 @@ renderBackgroundMap settings =
     , SA.height height
     , SA.x $ settings.mapPadding !! d0
     , SA.y $ settings.mapPadding !! d1
-    , SA.class_ "board__background"
+    , SA.class_ $ H.ClassName "board__background"
     ] [ image ]
   where
   image = case settings.backgroundUrl of
@@ -340,28 +369,33 @@ renderHexagon size center additionalAttributes =
   SE.path
     $ Array.snoc additionalAttributes
     $ SA.d -- this attribute holds the commands for path
-    $ SA.Abs -- make all the commands absolute
     -- we add a Z command to the end, which draws a line to where we started, completing the hexagon
-    <$> Array.snoc commands SA.Z 
+    $ Array.snoc commands SA.z 
   where
   -- The M command moves us to a point
   -- The L command draws a line to a point
   -- We move to the first corner and then keep drawing lines to the next
   commands = flip mapWithIndex points \index point ->
-    (if index == 0 then SA.M else SA.L)  
-      (point !! d0)
-      (point !! d1)
+    (if index == 0 then SA.m else SA.l) SA.Abs (point !! d0) (point !! d1)
 
   -- Here we calculate the positions of all 6 corners in the hexaon
   points :: Array (Vec2 Number)
   points = Array.range 0 5 <#> \nth -> hexagonCorner size nth center
 
+timer :: forall m a. MonadAff m => a -> m (HS.Emitter a)
+timer val = do
+  { emitter, listener } <- H.liftEffect HS.create
+  _ <- liftAff $ forkAff $ forever do 
+    delay $ Milliseconds 1000.0
+    H.liftEffect $ HS.notify listener val
+  pure emitter
+
 handleAction :: forall cs o m. MonadAff m => Action → H.HalogenM State Action cs o m Unit
 handleAction = case _ of
   Initialize -> do
-    interval <- gets _.settings.borderScrollInterval
-    -- This will fire the BorderScroll action every [interval] milliseconds
-    void $ H.subscribe $ BorderScroll <$ intervalEventSource interval
+    _ <- H.subscribe =<< timer BorderScroll
+    pure unit
+
   BorderScroll -> do
     { lastMousePosition, settings, dragState } <- get
     -- We only borderScroll while dragging a piece
